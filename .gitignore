@@ -1,0 +1,8 @@
+/target/
+.forgeguard/reports/
+.DS_Store
+*.swp
+*.tmp
+.env
+.env.*
+!.env.example

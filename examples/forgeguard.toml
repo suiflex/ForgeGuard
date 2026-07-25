@@ -1,0 +1,30 @@
+version = 1
+mode = "guard"
+
+[project]
+name = "example-project"
+
+[scan]
+enabled = true
+max_file_bytes = 1000000
+include_tests = false
+extra_excludes = ["generated/"]
+duplicate_block_lines = 6
+
+[[commands]]
+name = "format"
+command = "cargo fmt --all -- --check"
+required = true
+enabled = true
+
+[[commands]]
+name = "lint"
+command = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
+required = true
+enabled = true
+
+[[commands]]
+name = "test"
+command = "cargo test --workspace"
+required = true
+enabled = true

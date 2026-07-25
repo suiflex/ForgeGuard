@@ -1,0 +1,22 @@
+[package]
+name = "forgeguard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Engineering quality enforcement for AI coding agents"
+readme = "../../README.md"
+keywords = ["ai", "coding-agent", "quality", "static-analysis", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+rust-version.workspace = true
+
+[[bin]]
+name = "forgeguard"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+forgeguard-core = { path = "../forgeguard-core" }

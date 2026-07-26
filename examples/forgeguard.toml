@@ -16,15 +16,18 @@ name = "format"
 command = "cargo fmt --all -- --check"
 required = true
 enabled = true
+timeout_seconds = 600
 
 [[commands]]
 name = "lint"
 command = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
 required = true
 enabled = true
+timeout_seconds = 600
 
 [[commands]]
 name = "test"
 command = "cargo test --workspace"
 required = true
 enabled = true
+timeout_seconds = 600

@@ -2,6 +2,9 @@ use std::fmt::Write;
 
 use crate::{doctor::DoctorReport, model::GateReport, ProjectDetection};
 
+pub const COMPACT_MAX_CHARS: usize = 2_000;
+const COMPACT_MAX_FINDINGS: usize = 5;
+
 pub fn render_detection(report: &ProjectDetection) -> String {
     let mut output = String::new();
     let _ = writeln!(output, "ForgeGuard project detection");
@@ -72,26 +75,97 @@ pub fn render_gate(report: &GateReport) -> String {
     output
 }
 
+pub fn render_gate_compact(report: &GateReport) -> String {
+    let mut output = String::new();
+    let _ = writeln!(
+        output,
+        "ForgeGuard {}: {} error(s), {} warning(s), {} failed check(s).",
+        report.status.as_str(),
+        report.summary.errors,
+        report.summary.warnings,
+        report.summary.checks_failed
+    );
+    for finding in report.findings.iter().take(COMPACT_MAX_FINDINGS) {
+        let _ = writeln!(
+            output,
+            "- {} {}:{}: {} Fix: {}",
+            finding.rule_id,
+            finding.path.display(),
+            finding.line,
+            finding.title,
+            finding.recommendation
+        );
+    }
+    let omitted = report.findings.len().saturating_sub(COMPACT_MAX_FINDINGS);
+    if omitted > 0 {
+        let _ = writeln!(output, "- {omitted} additional finding(s) omitted.");
+    }
+    for check in report.checks.iter().filter(|check| !check.success) {
+        // forgeguard: allow FG-ALG-002 -- each output scanned once; O(total failed output lines)
+        let evidence = check
+            .output
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("command failed");
+        let _ = writeln!(output, "- check {} failed: {evidence}", check.name);
+    }
+    truncate_chars(output.trim(), COMPACT_MAX_CHARS)
+}
+
 pub fn render_doctor(report: &DoctorReport) -> String {
     let mut output = String::new();
     let _ = writeln!(
         output,
         "ForgeGuard doctor: {}",
-        if report.healthy { "healthy" } else { "needs attention" }
+        if report.healthy && report.warnings.is_empty() {
+            "healthy"
+        } else if report.healthy {
+            "healthy with warnings"
+        } else {
+            "needs attention"
+        }
     );
     let _ = writeln!(
         output,
         "  Configuration: {}",
         marker(report.configuration_found)
     );
-    let _ = writeln!(output, "  Git repository: {}", marker(report.git_repository));
+    let _ = writeln!(
+        output,
+        "  Git repository: {}",
+        marker(report.git_repository)
+    );
     for tool in &report.tools {
         let path = tool
             .path
             .as_ref()
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "not found".to_owned());
-        let _ = writeln!(output, "  Tool {}: {} ({path})", tool.tool, marker(tool.available));
+        let _ = writeln!(
+            output,
+            "  Tool {}: {} ({path})",
+            tool.tool,
+            marker(tool.available)
+        );
+    }
+    for hook in &report.hooks {
+        let state = if hook.configured {
+            "ok"
+        } else if hook.installed {
+            "missing"
+        } else {
+            "not installed"
+        };
+        let _ = writeln!(
+            output,
+            "  Hook {}: {} ({})",
+            hook.agent,
+            state,
+            hook.path.display()
+        );
+    }
+    for warning in &report.warnings {
+        let _ = writeln!(output, "  Warning: {warning}");
     }
     output
 }
@@ -105,5 +179,18 @@ fn render_values(output: &mut String, title: &str, values: &[String]) {
 }
 
 fn marker(value: bool) -> &'static str {
-    if value { "ok" } else { "missing" }
+    if value {
+        "ok"
+    } else {
+        "missing"
+    }
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_owned();
+    }
+    let mut output: String = value.chars().take(max_chars.saturating_sub(1)).collect();
+    output.push('…');
+    output
 }

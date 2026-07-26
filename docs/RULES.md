@@ -32,6 +32,18 @@ Warns on common fan-out patterns such as `Promise.all(collection.map(...))` and 
 
 Informational cross-file duplicate block signal. Extract only when the duplicated code represents the same responsibility and should evolve together.
 
+## FG-PARSE-001 — Structural analysis skipped
+
+Informational finding for supported files containing syntax errors or an unavailable grammar. ForgeGuard skips structural claims for that file instead of falling back to noisy lexical guesses.
+
 ## False positives
 
-ForgeGuard rules are evidence for review, not permission to refactor blindly. Configure narrow exclusions or use Lite/Guard mode while the analyzer evolves. Strict mode is intended for repositories that have reviewed their warning baseline.
+ForgeGuard rules are evidence for review, not permission to refactor blindly. Structural scope proves code placement, not runtime cost or business intent. Configure narrow exclusions or use Lite/Guard mode while the analyzer evolves. Strict mode is intended for repositories that have reviewed their warning baseline.
+
+A reviewed heuristic can be suppressed on its line or the preceding line with a required reason:
+
+```text
+// forgeguard: allow FG-ALG-001 -- bounded inner loop; maximum 8 items
+```
+
+Error-level findings and command failures cannot be suppressed.

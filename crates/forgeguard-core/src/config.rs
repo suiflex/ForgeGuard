@@ -64,6 +64,8 @@ pub struct CommandConfig {
     pub required: bool,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default = "default_command_timeout_seconds")]
+    pub timeout_seconds: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,4 +125,8 @@ fn default_max_file_bytes() -> u64 {
 
 fn default_duplicate_block_lines() -> usize {
     6
+}
+
+fn default_command_timeout_seconds() -> u64 {
+    600
 }

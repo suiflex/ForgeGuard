@@ -20,13 +20,16 @@ pub fn run_gate(
     config: &ForgeGuardConfig,
     options: &GateOptions,
 ) -> Result<GateReport> {
-    let findings = scan_project(
+    let mut findings = scan_project(
         root,
         &config.scan,
         &ScanOptions {
             paths: options.paths.clone(),
         },
     )?;
+    findings.dedup_by(|left, right| {
+        left.rule_id == right.rule_id && left.path == right.path && left.line == right.line
+    });
     let checks = if options.skip_commands {
         Vec::new()
     } else {
@@ -47,9 +50,7 @@ pub fn run_gate(
         .count();
     let checks_passed = checks.iter().filter(|check| check.success).count();
     let checks_failed = checks.iter().filter(|check| !check.success).count();
-    let required_check_failed = checks
-        .iter()
-        .any(|check| check.required && !check.success);
+    let required_check_failed = checks.iter().any(|check| check.required && !check.success);
 
     let status = if required_check_failed
         || matches!(config.mode, GuardMode::Guard | GuardMode::Strict) && errors > 0

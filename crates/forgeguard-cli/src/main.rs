@@ -1,21 +1,22 @@
-use std::{env, path::PathBuf, process::ExitCode};
+use std::{env, io::Read, path::PathBuf, process::ExitCode};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use forgeguard_core::{
     config::{ForgeGuardConfig, CONFIG_FILE},
-    detect_project,
+    detect_project, evaluate_stop_hook,
     git::changed_files,
-    initialize_global, initialize_project,
-    report::{render_detection, render_doctor, render_gate},
-    run_doctor, run_gate, AgentTarget, GateOptions, GateStatus, InitOptions,
+    initialize_global, initialize_project, render_hook_decision,
+    report::{render_detection, render_doctor, render_gate, render_gate_compact},
+    run_doctor, run_gate, AgentTarget, GateOptions, GateReport, GateStatus, HookAgent,
+    HookDecision, InitOptions,
 };
 
 #[derive(Debug, Parser)]
 #[command(
     name = "forgeguard",
     version,
-    about = "Engineering quality enforcement for AI coding agents"
+    about = "Token-efficient, language-agnostic engineering guardrails for AI coding agents"
 )]
 struct Cli {
     #[arg(long, global = true, default_value = ".")]
@@ -31,7 +32,7 @@ enum Commands {
     Init {
         #[arg(long)]
         force: bool,
-        /// Install skills under the user's Codex and Claude directories.
+        /// Install rules, skills, and hooks for supported agents under the user directory.
         #[arg(long)]
         global: bool,
         #[arg(long, value_enum, default_value = "all")]
@@ -53,6 +54,8 @@ enum Commands {
     Gate {
         #[arg(long)]
         json: bool,
+        #[arg(long, value_enum, default_value = "full", conflicts_with = "json")]
+        output: OutputArg,
         #[arg(long)]
         no_run: bool,
         #[arg(long)]
@@ -62,6 +65,13 @@ enum Commands {
     Review {
         #[arg(long)]
         json: bool,
+        #[arg(long, value_enum, default_value = "full", conflicts_with = "json")]
+        output: OutputArg,
+    },
+    /// Run lifecycle adapters used by supported AI coding agents.
+    Hook {
+        #[command(subcommand)]
+        command: HookCommands,
     },
 }
 
@@ -69,7 +79,35 @@ enum Commands {
 enum AgentArg {
     Codex,
     Claude,
+    Cursor,
+    #[value(name = "opencode")]
+    OpenCode,
+    Antigravity,
     All,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum OutputArg {
+    Full,
+    Compact,
+    Quiet,
+}
+
+#[derive(Debug, Subcommand)]
+enum HookCommands {
+    /// Verify changed code when an agent attempts to stop.
+    Stop {
+        #[arg(long, value_enum)]
+        agent: HookAgentArg,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum HookAgentArg {
+    Codex,
+    Claude,
+    Cursor,
+    Antigravity,
 }
 
 fn main() -> ExitCode {
@@ -106,7 +144,10 @@ fn execute() -> Result<ExitCode> {
                 if json {
                     println!("{}", serde_json::to_string_pretty(&report)?);
                 } else {
-                    println!("ForgeGuard global skills installed under {}", report.home.display());
+                    println!(
+                        "ForgeGuard global skills installed under {}",
+                        report.home.display()
+                    );
                     render_file_changes(&report.files_written, &report.files_skipped);
                 }
             } else {
@@ -151,6 +192,7 @@ fn execute() -> Result<ExitCode> {
         }
         Commands::Gate {
             json,
+            output,
             no_run,
             changed,
         } => {
@@ -170,14 +212,10 @@ fn execute() -> Result<ExitCode> {
                     paths,
                 },
             )?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
-            } else {
-                print!("{}", render_gate(&report));
-            }
+            render_gate_output(&report, json, output)?;
             Ok(exit_code_for_status(report.status))
         }
-        Commands::Review { json } => {
+        Commands::Review { json, output } => {
             let config = ForgeGuardConfig::load(&root).context(
                 "ForgeGuard is not initialized; run `forgeguard init` in the repository first",
             )?;
@@ -190,14 +228,48 @@ fn execute() -> Result<ExitCode> {
                     paths,
                 },
             )?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
-            } else {
-                print!("{}", render_gate(&report));
-            }
+            render_gate_output(&report, json, output)?;
             Ok(exit_code_for_status(report.status))
         }
+        Commands::Hook {
+            command: HookCommands::Stop { agent },
+        } => execute_stop_hook(&root, agent.into()),
     }
+}
+
+fn execute_stop_hook(root: &std::path::Path, agent: HookAgent) -> Result<ExitCode> {
+    let mut input = String::new();
+    std::io::stdin()
+        .read_to_string(&mut input)
+        .context("failed to read hook input")?;
+    let decision = match evaluate_stop_hook(root, &input) {
+        Ok((decision, _cache_hit)) => decision,
+        Err(error) => {
+            let detail = format!("{error:#}");
+            let detail: String = detail.chars().take(500).collect();
+            HookDecision::Block(format!(
+                "ForgeGuard hook failed: {detail}. Fix hook setup or run `forgeguard gate --changed`."
+            ))
+        }
+    };
+    let output = render_hook_decision(agent, &decision);
+    if !output.is_empty() {
+        println!("{output}");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn render_gate_output(report: &GateReport, json: bool, output: OutputArg) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(report)?);
+    } else {
+        match output {
+            OutputArg::Full => print!("{}", render_gate(report)),
+            OutputArg::Compact => println!("{}", render_gate_compact(report)),
+            OutputArg::Quiet => {}
+        }
+    }
+    Ok(())
 }
 
 fn exit_code_for_status(status: GateStatus) -> ExitCode {
@@ -212,7 +284,21 @@ impl From<AgentArg> for AgentTarget {
         match value {
             AgentArg::Codex => Self::Codex,
             AgentArg::Claude => Self::Claude,
+            AgentArg::Cursor => Self::Cursor,
+            AgentArg::OpenCode => Self::OpenCode,
+            AgentArg::Antigravity => Self::Antigravity,
             AgentArg::All => Self::All,
+        }
+    }
+}
+
+impl From<HookAgentArg> for HookAgent {
+    fn from(value: HookAgentArg) -> Self {
+        match value {
+            HookAgentArg::Codex => Self::Codex,
+            HookAgentArg::Claude => Self::Claude,
+            HookAgentArg::Cursor => Self::Cursor,
+            HookAgentArg::Antigravity => Self::Antigravity,
         }
     }
 }

@@ -1,6 +1,6 @@
 use std::fs;
 
-use forgeguard_core::{scan_project, config::ScanConfig, ScanOptions};
+use forgeguard_core::{config::ScanConfig, scan_project, ScanOptions};
 use tempfile::tempdir;
 
 #[test]
@@ -18,10 +18,16 @@ pub fn normalize_customer(customer: Customer) -> CustomerView {
     fs::write(directory.path().join("customer.rs"), source).expect("write first source");
     fs::write(directory.path().join("account.rs"), source).expect("write second source");
 
-    let findings = scan_project(directory.path(), &ScanConfig::default(), &ScanOptions::default())
-        .expect("scan project");
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
 
-    assert!(findings.iter().any(|finding| finding.rule_id == "FG-DRY-001"));
+    assert!(findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-DRY-001"));
 }
 
 #[test]
@@ -50,6 +56,33 @@ pub fn normalize_customer(customer: Customer) -> CustomerView {
 
     assert!(findings.iter().any(|finding| {
         finding.rule_id == "FG-DRY-001"
-            && finding.path == std::path::PathBuf::from("changed.rs")
+            && finding.path.as_path() == std::path::Path::new("changed.rs")
     }));
+}
+
+#[test]
+fn unsupported_parser_language_still_receives_duplicate_check() {
+    let directory = tempdir().expect("temp directory");
+    let source = r#"
+function normalize_customer(customer)
+  local normalized_name = string.lower(customer.name)
+  local normalized_email = string.lower(customer.email)
+  local is_active = customer.deleted_at == nil
+  local display_name = normalized_name .. " <" .. normalized_email .. ">"
+  return {name = normalized_name, email = normalized_email, active = is_active, display = display_name}
+end
+"#;
+    fs::write(directory.path().join("customer.lua"), source).expect("write first source");
+    fs::write(directory.path().join("account.lua"), source).expect("write second source");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    assert!(findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-DRY-001"));
 }

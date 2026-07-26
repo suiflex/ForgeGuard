@@ -1,6 +1,6 @@
 use std::fs;
 
-use forgeguard_core::{scan_project, config::ScanConfig, ScanOptions, Severity};
+use forgeguard_core::{config::ScanConfig, scan_project, ScanOptions, Severity};
 use tempfile::tempdir;
 
 #[test]
@@ -22,14 +22,22 @@ export async function enrich(users, roles, db) {
     )
     .expect("write source");
 
-    let findings = scan_project(directory.path(), &ScanConfig::default(), &ScanOptions::default())
-        .expect("scan project");
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
 
-    assert!(findings.iter().any(|finding| finding.rule_id == "FG-ALG-001"));
-    assert!(findings.iter().any(|finding| finding.rule_id == "FG-ALG-002"));
-    assert!(findings.iter().any(|finding| {
-        finding.rule_id == "FG-DB-001" && finding.severity == Severity::Error
-    }));
+    assert!(findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-ALG-001"));
+    assert!(findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-ALG-002"));
+    assert!(findings
+        .iter()
+        .any(|finding| { finding.rule_id == "FG-DB-001" && finding.severity == Severity::Error }));
 }
 
 #[test]
@@ -44,11 +52,19 @@ await Promise.all(rows.map((row) => processRow(row)));
     )
     .expect("write source");
 
-    let findings = scan_project(directory.path(), &ScanConfig::default(), &ScanOptions::default())
-        .expect("scan project");
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
 
-    assert!(findings.iter().any(|finding| finding.rule_id == "FG-CON-001"));
-    assert!(findings.iter().any(|finding| finding.rule_id == "FG-DB-005"));
+    assert!(findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-CON-001"));
+    assert!(findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-DB-005"));
 }
 
 #[test]
@@ -63,10 +79,16 @@ const result = users.map((user) => ({ ...user, role: roleById.get(user.roleId) }
     )
     .expect("write source");
 
-    let findings = scan_project(directory.path(), &ScanConfig::default(), &ScanOptions::default())
-        .expect("scan project");
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
 
-    assert!(!findings.iter().any(|finding| finding.rule_id == "FG-ALG-002"));
+    assert!(!findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-ALG-002"));
 }
 
 #[test]
@@ -84,11 +106,19 @@ async def load_profiles(users, db):
     )
     .expect("write source");
 
-    let findings = scan_project(directory.path(), &ScanConfig::default(), &ScanOptions::default())
-        .expect("scan project");
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
 
-    assert!(findings.iter().any(|finding| finding.rule_id == "FG-ALG-001"));
-    assert!(findings.iter().any(|finding| finding.rule_id == "FG-DB-001"));
+    assert!(findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-ALG-001"));
+    assert!(findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-DB-001"));
 }
 
 #[test]
@@ -100,10 +130,37 @@ fn detects_single_line_map_with_linear_lookup() {
     )
     .expect("write source");
 
-    let findings = scan_project(directory.path(), &ScanConfig::default(), &ScanOptions::default())
-        .expect("scan project");
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
 
-    assert!(findings.iter().any(|finding| finding.rule_id == "FG-ALG-002"));
+    assert!(findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-ALG-002"));
+}
+
+#[test]
+fn detects_filter_inside_map() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("service.ts"),
+        "const output = users.map((user) => roles.filter((role) => role.userId === user.id));\n",
+    )
+    .expect("write source");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    assert!(findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-ALG-001"));
 }
 
 #[test]
@@ -119,10 +176,16 @@ for (const user of users) {
     )
     .expect("write source");
 
-    let findings = scan_project(directory.path(), &ScanConfig::default(), &ScanOptions::default())
-        .expect("scan project");
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
 
-    assert!(findings.iter().any(|finding| finding.rule_id == "FG-NET-001"));
+    assert!(findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-NET-001"));
 }
 
 #[test]
@@ -138,8 +201,360 @@ for (const account of accounts) {
     )
     .expect("write source");
 
-    let findings = scan_project(directory.path(), &ScanConfig::default(), &ScanOptions::default())
-        .expect("scan project");
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
 
-    assert!(findings.iter().any(|finding| finding.rule_id == "FG-DB-001"));
+    assert!(findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-DB-001"));
+}
+
+#[test]
+fn parses_every_supported_language_without_fallback() {
+    let directory = tempdir().expect("temp directory");
+    let sources = [
+        ("app.js", "for (const value of values) { console.log(value); }\n"),
+        ("app.jsx", "export const App = () => <main>Hello</main>;\n"),
+        ("app.ts", "const value: number = 1;\n"),
+        ("app.tsx", "export const App = () => <main>Hello</main>;\n"),
+        ("app.rs", "fn run(values: &[i32]) { for value in values { println!(\"{value}\"); } }\n"),
+        ("app.go", "package app\nfunc run(values []int) { for _, value := range values { println(value) } }\n"),
+        ("app.py", "def run(values):\n    for value in values:\n        print(value)\n"),
+        ("App.java", "class App { void run(int[] values) { for (int value : values) { System.out.println(value); } } }\n"),
+        ("app.kt", "fun run(values: List<Int>) { for (value in values) { println(value) } }\n"),
+        ("App.cs", "class App { void Run(int[] values) { foreach (var value in values) { System.Console.WriteLine(value); } } }\n"),
+        ("app.c", "void run(int *values, int count) { for (int i = 0; i < count; i++) { values[i]++; } }\n"),
+        ("app.cpp", "void run(int *values, int count) { for (int i = 0; i < count; i++) { values[i]++; } }\n"),
+        ("app.rb", "def run(values)\n  values.each { |value| puts(value) }\nend\n"),
+        ("app.php", "<?php\nfunction run($values) { foreach ($values as $value) { echo $value; } }\n"),
+        ("app.swift", "func run(_ values: [Int]) { for value in values { print(value) } }\n"),
+        ("app.dart", "void run(List<int> values) { for (final value in values) { print(value); } }\n"),
+        ("app.sh", "for value in 1 2 3; do\n  printf '%s\\n' \"$value\"\ndone\n"),
+    ];
+    for (name, source) in sources {
+        fs::write(directory.path().join(name), source).expect("write source");
+    }
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    assert!(!findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-PARSE-001"));
+}
+
+#[test]
+fn detects_database_access_in_rust_go_and_python_loops() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("repository.rs"),
+        "fn load(users: &[User], db: &Db) { for user in users { db.query(user.id); } }\n",
+    )
+    .expect("write Rust source");
+    fs::write(
+        directory.path().join("repository.go"),
+        "package app\nfunc load(users []User, db DB) { for _, user := range users { db.Query(user.ID) } }\n",
+    )
+    .expect("write Go source");
+    fs::write(
+        directory.path().join("repository.py"),
+        "def load(users, db):\n    for user in users:\n        db.query(user.id)\n",
+    )
+    .expect("write Python source");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    for path in ["repository.rs", "repository.go", "repository.py"] {
+        assert!(findings.iter().any(|finding| finding.rule_id == "FG-DB-001"
+            && finding.path.as_path() == std::path::Path::new(path)));
+    }
+}
+
+#[test]
+fn ignores_rule_names_inside_strings_and_comments() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("scanner.rs"),
+        r#"
+fn messages(items: &[Item]) {
+    for item in items {
+        let rule = "db.query(\"SELECT * FROM users\")";
+        // await prisma.user.findMany()
+        println!("{rule} {}", item.id);
+    }
+}
+"#,
+    )
+    .expect("write source");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    assert!(!findings
+        .iter()
+        .any(|finding| matches!(finding.rule_id.as_str(), "FG-DB-001" | "FG-DB-005")));
+}
+
+#[test]
+fn rust_set_membership_is_not_reported_as_linear_lookup() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("membership.rs"),
+        r#"
+fn retain(values: &[i32], allowed: &std::collections::HashSet<i32>) {
+    for value in values {
+        if allowed.contains(value) {
+            println!("{value}");
+        }
+    }
+}
+"#,
+    )
+    .expect("write source");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    assert!(!findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-ALG-002"));
+}
+
+#[test]
+fn statically_bounded_take_is_not_reported_as_quadratic() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("report.rs"),
+        r#"
+fn render(checks: &[Check]) {
+    for check in checks {
+        for line in check.output.lines().take(20) {
+            println!("{line}");
+        }
+    }
+}
+"#,
+    )
+    .expect("write source");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    assert!(!findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-ALG-001"));
+}
+
+#[test]
+fn malformed_source_reports_parse_skip_without_structural_claims() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(directory.path().join("broken.rs"), "fn broken(\n").expect("write source");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    assert!(findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-PARSE-001"));
+    assert!(!findings.iter().any(|finding| {
+        finding.rule_id.starts_with("FG-ALG")
+            || finding.rule_id.starts_with("FG-DB")
+            || finding.rule_id.starts_with("FG-NET")
+            || finding.rule_id.starts_with("FG-CON")
+    }));
+}
+
+#[test]
+fn unsupported_languages_receive_no_structural_findings() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("repository.lua"),
+        "for _, user in ipairs(users) do\n  db.query(user.id)\nend\n",
+    )
+    .expect("write source");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn detects_nested_loops_in_added_language_profiles() {
+    let directory = tempdir().expect("temp directory");
+    let sources = [
+        ("Nested.java", "class Nested { void run(int[][] rows) { for (int[] row : rows) { for (int value : row) { System.out.println(value); } } } }\n"),
+        ("nested.kt", "fun run(rows: List<List<Int>>) { for (row in rows) { for (value in row) { println(value) } } }\n"),
+        ("Nested.cs", "class Nested { void Run(int[][] rows) { foreach (var row in rows) { foreach (var value in row) { System.Console.WriteLine(value); } } } }\n"),
+        ("nested.c", "void run(int **rows, int size) { for (int i = 0; i < size; i++) { for (int j = 0; j < size; j++) { rows[i][j]++; } } }\n"),
+        ("nested.cpp", "void run(int **rows, int size) { for (int i = 0; i < size; i++) { for (int j = 0; j < size; j++) { rows[i][j]++; } } }\n"),
+        ("nested.rb", "rows.each do |row|\n  row.each { |value| puts(value) }\nend\n"),
+        ("nested.php", "<?php\nforeach ($rows as $row) { foreach ($row as $value) { echo $value; } }\n"),
+        ("nested.swift", "func run(_ rows: [[Int]]) { for row in rows { for value in row { print(value) } } }\n"),
+        ("nested.dart", "void run(List<List<int>> rows) { for (final row in rows) { for (final value in row) { print(value); } } }\n"),
+        ("nested.sh", "for row in 1 2; do\n  for value in 1 2; do\n    printf '%s\\n' \"$row:$value\"\n  done\ndone\n"),
+    ];
+    for (name, source) in sources {
+        fs::write(directory.path().join(name), source).expect("write source");
+    }
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    for (name, _) in sources {
+        assert!(
+            findings.iter().any(|finding| {
+                finding.rule_id == "FG-ALG-001"
+                    && finding.path.as_path() == std::path::Path::new(name)
+            }),
+            "missing nested-loop finding for {name}"
+        );
+    }
+}
+
+#[test]
+fn detects_database_calls_in_common_object_oriented_languages() {
+    let directory = tempdir().expect("temp directory");
+    let sources = [
+        ("Repository.java", "class Repository { void load(User[] users, Db db) { for (User user : users) { db.query(user.id); } } }\n"),
+        ("repository.kt", "fun load(users: List<User>, db: Db) { for (user in users) { db.query(user.id) } }\n"),
+        ("Repository.cs", "class Repository { void Load(User[] users, Db db) { foreach (var user in users) { db.QueryAsync(user.Id); } } }\n"),
+        ("repository.rb", "users.each do |user|\n  db.query(user.id)\nend\n"),
+        ("repository.php", "<?php\nforeach ($users as $user) { $db->query($user->id); }\n"),
+        ("repository.swift", "func load(_ users: [User], db: Database) { for user in users { db.query(user.id) } }\n"),
+        ("repository.dart", "void load(List<User> users, Database db) { for (final user in users) { db.query(user.id); } }\n"),
+    ];
+    for (name, source) in sources {
+        fs::write(directory.path().join(name), source).expect("write source");
+    }
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    for (name, _) in sources {
+        assert!(
+            findings.iter().any(|finding| {
+                finding.rule_id == "FG-DB-001"
+                    && finding.path.as_path() == std::path::Path::new(name)
+            }),
+            "missing database-in-loop finding for {name}"
+        );
+    }
+}
+
+#[test]
+fn sql_files_still_report_select_all() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("users.sql"),
+        "-- users\nSELECT * FROM users;\n",
+    )
+    .expect("write SQL");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    assert!(findings
+        .iter()
+        .any(|finding| { finding.rule_id == "FG-DB-005" && finding.line == 2 }));
+}
+
+#[test]
+fn sql_findings_keep_line_numbers_across_multiple_matches() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("queries.sql"),
+        "SELECT * FROM users;\n\nSELECT * FROM roles;\nSELECT id FROM teams;\nSELECT * FROM jobs;\n",
+    )
+    .expect("write SQL");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+    let lines = findings
+        .iter()
+        .filter(|finding| finding.rule_id == "FG-DB-005")
+        .map(|finding| finding.line)
+        .collect::<Vec<_>>();
+
+    assert_eq!(lines, vec![1, 3, 5]);
+}
+
+#[test]
+fn reasoned_inline_suppression_only_hides_heuristics() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("service.ts"),
+        r#"
+for (const user of users) {
+  // forgeguard: allow FG-ALG-002 -- roles has a documented maximum of 4
+  const role = roles.find((candidate) => candidate.id === user.roleId);
+  // forgeguard: allow FG-DB-001 -- error-level rules cannot be suppressed
+  await db.query("SELECT id FROM users WHERE id = ?", [user.id]);
+}
+"#,
+    )
+    .expect("write source");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    assert!(!findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-ALG-002"));
+    assert!(findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-DB-001"));
 }

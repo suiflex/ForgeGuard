@@ -35,6 +35,7 @@ pub fn scan_duplicate_blocks(
             .filter_map(|(index, line)| normalize_line(line).map(|value| (index + 1, value)))
             .collect();
 
+        // forgeguard: allow FG-ALG-001 -- bounded window per file; O(total lines × block_lines)
         for window in lines.windows(block_lines) {
             let normalized = window
                 .iter()
@@ -60,6 +61,7 @@ pub fn scan_duplicate_blocks(
         let Some(first) = occurrences.first() else {
             continue;
         };
+        // forgeguard: allow FG-ALG-001 -- disjoint hash groups; total traversal is O(occurrences)
         for duplicate in occurrences.iter().skip(1) {
             if first.path == duplicate.path || first.snippet != duplicate.snippet {
                 continue;
@@ -70,9 +72,12 @@ pub fn scan_duplicate_blocks(
                 Some(_) => continue,
                 None => (duplicate, first),
             };
-            let mut pair = [first.path.clone(), duplicate.path.clone()];
-            pair.sort();
-            if !reported_pairs.insert((pair[0].clone(), pair[1].clone())) {
+            let pair = if first.path <= duplicate.path {
+                (first.path.clone(), duplicate.path.clone())
+            } else {
+                (duplicate.path.clone(), first.path.clone())
+            };
+            if !reported_pairs.insert(pair) {
                 continue;
             }
             findings.push(Finding {

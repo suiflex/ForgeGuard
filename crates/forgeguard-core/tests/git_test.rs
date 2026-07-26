@@ -12,8 +12,11 @@ fn returns_untracked_files_with_spaces() {
         .status()
         .expect("run git init");
     assert!(status.success());
-    fs::write(directory.path().join("file with spaces.ts"), "export const value = 1;\n")
-        .expect("write source");
+    fs::write(
+        directory.path().join("file with spaces.ts"),
+        "export const value = 1;\n",
+    )
+    .expect("write source");
 
     let paths = changed_files(directory.path()).expect("read changed files");
 

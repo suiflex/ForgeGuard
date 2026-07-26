@@ -1,8 +1,6 @@
 use std::fs;
 
-use forgeguard_core::{
-    run_gate, ForgeGuardConfig, GateOptions, GateStatus, GuardMode,
-};
+use forgeguard_core::{run_gate, ForgeGuardConfig, GateOptions, GateStatus, GuardMode};
 use tempfile::tempdir;
 
 #[test]

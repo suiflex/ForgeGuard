@@ -11,6 +11,7 @@ fn configuration_round_trips_through_toml() {
             command: "cargo test".to_owned(),
             required: true,
             enabled: true,
+            timeout_seconds: 30,
         }],
     );
     config.mode = GuardMode::Strict;

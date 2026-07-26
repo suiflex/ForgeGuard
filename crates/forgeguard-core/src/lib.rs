@@ -4,6 +4,7 @@ pub mod doctor;
 pub mod duplication;
 pub mod gate;
 pub mod git;
+pub mod hook;
 pub mod init;
 pub mod model;
 pub mod report;
@@ -14,6 +15,7 @@ pub use config::{CommandConfig, ForgeGuardConfig, GuardMode};
 pub use detector::{detect_project, ProjectDetection};
 pub use doctor::{run_doctor, DoctorReport};
 pub use gate::{run_gate, GateOptions};
+pub use hook::{evaluate_stop_hook, render_hook_decision, HookAgent, HookDecision};
 pub use init::{
     initialize_global, initialize_project, AgentTarget, GlobalInitReport, InitOptions, InitReport,
 };

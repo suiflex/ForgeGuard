@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -33,16 +34,13 @@ pub fn detect_project(root: &Path) -> Result<ProjectDetection> {
     let mut test_tools = BTreeSet::new();
     let mut commands = BTreeMap::<String, CommandConfig>::new();
 
+    detect_source_languages(&root, &mut languages);
+
     if root.join("Cargo.toml").exists() {
         languages.insert("Rust".to_owned());
         package_managers.insert("Cargo".to_owned());
         test_tools.insert("cargo test".to_owned());
-        add_command(
-            &mut commands,
-            "format",
-            "cargo fmt --all -- --check",
-            true,
-        );
+        add_command(&mut commands, "format", "cargo fmt --all -- --check", true);
         add_command(
             &mut commands,
             "lint",
@@ -89,8 +87,76 @@ pub fn detect_project(root: &Path) -> Result<ProjectDetection> {
         )?;
     }
 
-    if root.join("pom.xml").exists() || root.join("build.gradle").exists() {
+    if root.join("pom.xml").exists() {
         languages.insert("Java/Kotlin".to_owned());
+        package_managers.insert("Maven".to_owned());
+        test_tools.insert("Maven test".to_owned());
+        add_command(&mut commands, "test", "mvn test", true);
+        add_command(&mut commands, "build", "mvn package -DskipTests", true);
+    } else if root.join("build.gradle").exists() || root.join("build.gradle.kts").exists() {
+        languages.insert("Java/Kotlin".to_owned());
+        package_managers.insert("Gradle".to_owned());
+        let gradle = if root.join("gradlew").exists() {
+            "./gradlew"
+        } else {
+            "gradle"
+        };
+        add_command(&mut commands, "test", &format!("{gradle} test"), true);
+        add_command(
+            &mut commands,
+            "build",
+            &format!("{gradle} build -x test"),
+            true,
+        );
+    }
+
+    if root.join("Package.swift").exists() {
+        languages.insert("Swift".to_owned());
+        package_managers.insert("Swift Package Manager".to_owned());
+        test_tools.insert("swift test".to_owned());
+        add_command(&mut commands, "test", "swift test", true);
+        add_command(&mut commands, "build", "swift build", true);
+    }
+
+    let pubspec = root.join("pubspec.yaml");
+    if pubspec.exists() {
+        languages.insert("Dart".to_owned());
+        package_managers.insert("pub".to_owned());
+        let source = fs::read_to_string(&pubspec).unwrap_or_default();
+        let flutter = source.lines().any(|line| line.trim() == "flutter:");
+        if flutter {
+            frameworks.insert("Flutter".to_owned());
+            test_tools.insert("flutter test".to_owned());
+        } else {
+            test_tools.insert("dart test".to_owned());
+        }
+        add_command(
+            &mut commands,
+            "format",
+            "dart format --output=none --set-exit-if-changed .",
+            true,
+        );
+        add_command(&mut commands, "lint", "dart analyze", true);
+        add_command(
+            &mut commands,
+            "test",
+            if flutter { "flutter test" } else { "dart test" },
+            true,
+        );
+    }
+
+    if has_root_extension(&root, &["sln", "csproj"]) {
+        languages.insert("C#".to_owned());
+        package_managers.insert("NuGet".to_owned());
+        test_tools.insert("dotnet test".to_owned());
+        add_command(
+            &mut commands,
+            "format",
+            "dotnet format --verify-no-changes",
+            true,
+        );
+        add_command(&mut commands, "test", "dotnet test", true);
+        add_command(&mut commands, "build", "dotnet build --no-restore", true);
     }
 
     if root.join("schema.prisma").exists() || root.join("prisma/schema.prisma").exists() {
@@ -135,6 +201,13 @@ fn detect_node(
         ("express", "Express"),
         ("fastify", "Fastify"),
         ("@nestjs/core", "NestJS"),
+        ("react-native", "React Native"),
+        ("expo", "Expo"),
+        ("@capacitor/core", "Capacitor"),
+        ("electron", "Electron"),
+        ("@langchain/core", "LangChain"),
+        ("@openai/agents", "OpenAI Agents SDK"),
+        ("ai", "Vercel AI SDK"),
     ] {
         if dependencies.contains(package) {
             frameworks.insert(label.to_owned());
@@ -201,6 +274,85 @@ fn detect_node(
     Ok(())
 }
 
+fn detect_source_languages(root: &Path, languages: &mut BTreeSet<String>) {
+    let walker = WalkBuilder::new(root)
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .filter_entry(|entry| {
+            !matches!(
+                entry.file_name().to_str(),
+                Some(
+                    ".git"
+                        | "target"
+                        | "node_modules"
+                        | "vendor"
+                        | ".venv"
+                        | "venv"
+                        | "dist"
+                        | "build"
+                        | ".next"
+                )
+            )
+        })
+        .build();
+    for entry in walker.filter_map(|entry| entry.ok()).filter(|entry| {
+        entry
+            .file_type()
+            .is_some_and(|file_type| file_type.is_file())
+    }) {
+        let Some(extension) = entry.path().extension().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let language = match extension.to_ascii_lowercase().as_str() {
+            "rs" => "Rust",
+            "go" => "Go",
+            "py" | "pyi" => "Python",
+            "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts" => "JavaScript/TypeScript",
+            "java" | "kt" | "kts" => "Java/Kotlin",
+            "swift" => "Swift",
+            "dart" => "Dart",
+            "cs" => "C#",
+            "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" => "C/C++",
+            "php" => "PHP",
+            "rb" => "Ruby",
+            "sh" | "bash" | "zsh" | "fish" => "Shell",
+            "lua" => "Lua",
+            "ex" | "exs" => "Elixir",
+            "erl" | "hrl" => "Erlang",
+            "scala" | "sc" => "Scala",
+            "r" => "R",
+            "sql" => "SQL",
+            "tf" | "hcl" => "Terraform/HCL",
+            "sol" => "Solidity",
+            "zig" => "Zig",
+            "vue" => "Vue SFC",
+            "svelte" => "Svelte",
+            "proto" => "Protocol Buffers",
+            _ => continue,
+        };
+        languages.insert(language.to_owned());
+    }
+}
+
+fn has_root_extension(root: &Path, extensions: &[&str]) -> bool {
+    let Ok(entries) = fs::read_dir(root) else {
+        return false;
+    };
+    entries.filter_map(|entry| entry.ok()).any(|entry| {
+        entry
+            .path()
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|extension| {
+                extensions
+                    .iter()
+                    .any(|candidate| extension.eq_ignore_ascii_case(candidate))
+            })
+    })
+}
+
 fn detect_python(
     root: &Path,
     package_managers: &mut BTreeSet<String>,
@@ -257,5 +409,6 @@ fn add_command(
         command: command.to_owned(),
         required,
         enabled: true,
+        timeout_seconds: 600,
     });
 }

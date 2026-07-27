@@ -4,7 +4,7 @@ use forgeguard_core::{run_gate, ForgeGuardConfig, GateOptions, GateStatus, Guard
 use tempfile::tempdir;
 
 #[test]
-fn guard_mode_blocks_error_level_findings() {
+fn default_mode_reports_static_findings_without_blocking() {
     let directory = tempdir().expect("temp directory");
     fs::write(
         directory.path().join("repository.ts"),
@@ -16,6 +16,34 @@ for (const user of users) {
     )
     .expect("write source");
     let config = ForgeGuardConfig::new("sample", Vec::new());
+
+    let report = run_gate(
+        directory.path(),
+        &config,
+        &GateOptions {
+            skip_commands: true,
+            paths: None,
+        },
+    )
+    .expect("run gate");
+
+    assert_eq!(report.status, GateStatus::Warning);
+}
+
+#[test]
+fn strict_mode_blocks_error_level_findings() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("repository.ts"),
+        r#"
+for (const user of users) {
+  await db.query("SELECT id FROM profiles WHERE user_id = ?", [user.id]);
+}
+"#,
+    )
+    .expect("write source");
+    let mut config = ForgeGuardConfig::new("sample", Vec::new());
+    config.mode = GuardMode::Strict;
 
     let report = run_gate(
         directory.path(),

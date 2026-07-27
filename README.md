@@ -55,7 +55,8 @@ A blocked gate may cause the host agent to use another turn to fix real failures
 - One `forgeguard-engineering` skill with conditional clean-code, algorithm, backend, frontend, mobile, database, AI, and testing references.
 - Static rules for nested iteration, repeated linear lookup, sorting in loops, database I/O in loops, external requests in loops, unbounded fan-out, `SELECT *`, and potential duplicated blocks.
 - Automatic formatter, linter, type-check, test, and build command discovery.
-- `lite`, `guard`, and `strict` enforcement modes.
+- `default`, `lite`, and `strict` operating modes with project and global persistence.
+- Interactive mode selection during `forgeguard init` and via `forgeguard mode`.
 - Human-readable and JSON reports.
 
 ## Install
@@ -171,7 +172,7 @@ Example:
 
 ```toml
 version = 1
-mode = "guard"
+mode = "default"
 
 [project]
 name = "example-service"
@@ -199,9 +200,36 @@ timeout_seconds = 600
 
 ### Modes
 
-- `lite`: reports findings but blocks only failed required commands.
-- `guard`: blocks error-level deterministic findings and failed required commands.
-- `strict`: also blocks warning-level findings until fixed or explicitly configured.
+ForgeGuard supports three operating modes:
+
+- `default`: token-friendly default for new installs. Static findings are reported, but only failed required commands block.
+- `lite`: report-only mode for baselining or cleanup work. Static findings do not block.
+- `strict`: strong guard mode. Failed required commands and error-level deterministic findings block.
+
+Older configs with `mode = "guard"` still load as `strict` for compatibility.
+
+Set project mode:
+
+```bash
+forgeguard mode default
+forgeguard mode lite
+forgeguard mode strict
+```
+
+Set user-level/global mode:
+
+```bash
+forgeguard mode strict --global
+```
+
+Inspect mode as JSON:
+
+```bash
+forgeguard mode --json
+forgeguard mode --global --json
+```
+
+When run in a terminal without an explicit mode, `forgeguard mode` opens the same interactive mode picker used by `forgeguard init`. Non-TTY calls and `--json` never prompt, so scripts and CI do not hang.
 
 ## Commands
 
@@ -210,6 +238,7 @@ timeout_seconds = 600
 | `forgeguard init` | Install project configuration and agent skills. Use `--global` for user-level skills. |
 | `forgeguard detect` | Detect languages, frameworks, database tools, tests, and commands. |
 | `forgeguard doctor` | Verify configuration, Git, and required local tools. |
+| `forgeguard mode` | Check or change project/global operating mode. |
 | `forgeguard gate` | Run static rules and configured quality commands. |
 | `forgeguard review` | Scan Git-changed files without running commands. |
 | `forgeguard hook stop` | Internal token-efficient lifecycle adapter for supported agents. |

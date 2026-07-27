@@ -52,10 +52,7 @@ pub fn run_gate(
     let checks_failed = checks.iter().filter(|check| !check.success).count();
     let required_check_failed = checks.iter().any(|check| check.required && !check.success);
 
-    let status = if required_check_failed
-        || matches!(config.mode, GuardMode::Guard | GuardMode::Strict) && errors > 0
-        || config.mode == GuardMode::Strict && warnings > 0
-    {
+    let status = if required_check_failed || config.mode == GuardMode::Strict && errors > 0 {
         GateStatus::Blocked
     } else if errors + warnings + info + checks_failed > 0 {
         GateStatus::Warning

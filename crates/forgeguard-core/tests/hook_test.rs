@@ -9,9 +9,9 @@ use tempfile::tempdir;
 fn blocked_hook_is_compact_cached_and_loop_safe() {
     let directory = tempdir().expect("temp directory");
     git_init(directory.path());
-    ForgeGuardConfig::new("sample", Vec::new())
-        .save(directory.path())
-        .expect("save config");
+    let mut config = ForgeGuardConfig::new("sample", Vec::new());
+    config.mode = forgeguard_core::GuardMode::Strict;
+    config.save(directory.path()).expect("save config");
     for index in 0..40 {
         fs::write(
             directory.path().join(format!("repository-{index}.ts")),
@@ -114,7 +114,7 @@ fn agent_protocols_are_silent_or_structured() {
 }
 
 #[test]
-fn auto_gate_runs_without_config_and_ignores_artifacts() {
+fn auto_gate_reports_without_blocking_without_config_and_ignores_artifacts() {
     let directory = tempdir().expect("temp directory");
     git_init(directory.path());
     // A pre-existing root .gitignore must be appended to, not clobbered.
@@ -130,7 +130,7 @@ fn auto_gate_runs_without_config_and_ignores_artifacts() {
         directory.path().display()
     );
     let (decision, _) = evaluate_stop_hook(directory.path(), &input).expect("evaluate hook");
-    assert!(matches!(decision, HookDecision::Block(_)));
+    assert_eq!(decision, HookDecision::Pass);
 
     // No manual setup, yet artifacts are kept out of version control.
     let marker = fs::read_to_string(directory.path().join(".forgeguard/.gitignore"))

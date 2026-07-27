@@ -85,14 +85,14 @@ pub enum AgentTarget {
 #[derive(Debug, Clone)]
 pub struct InitOptions {
     pub force: bool,
-    pub agent: AgentTarget,
+    pub agents: Vec<AgentTarget>,
 }
 
 impl Default for InitOptions {
     fn default() -> Self {
         Self {
             force: false,
-            agent: AgentTarget::All,
+            agents: vec![AgentTarget::All],
         }
     }
 }
@@ -135,7 +135,7 @@ pub fn initialize_global(home: &Path, options: &InitOptions) -> Result<GlobalIni
     install_agents(
         &home,
         InstallScope::Global,
-        options.agent,
+        &options.agents,
         options.force,
         &mut files_written,
         &mut files_skipped,
@@ -177,7 +177,7 @@ pub fn initialize_project(root: &Path, options: &InitOptions) -> Result<InitRepo
     install_agents(
         root,
         InstallScope::Project,
-        options.agent,
+        &options.agents,
         options.force,
         &mut files_written,
         &mut files_skipped,
@@ -193,17 +193,30 @@ pub fn initialize_project(root: &Path, options: &InitOptions) -> Result<InitRepo
 fn install_agents(
     root: &Path,
     scope: InstallScope,
-    target: AgentTarget,
+    requested: &[AgentTarget],
     force: bool,
     written: &mut Vec<String>,
     skipped: &mut Vec<String>,
 ) -> Result<()> {
-    let targets = if target == AgentTarget::All {
-        ALL_AGENT_TARGETS
-    } else {
-        std::slice::from_ref(&target)
+    // Flatten `All` into the concrete list and dedup so `[Claude, All]` never
+    // installs Claude twice.
+    // ponytail: O(n²) contains-check, but n <= 5 agents; a set is not worth it.
+    let mut targets: Vec<AgentTarget> = Vec::new();
+    let push = |target: AgentTarget, targets: &mut Vec<AgentTarget>| {
+        if !targets.contains(&target) {
+            targets.push(target);
+        }
     };
-    for target in targets {
+    for target in requested {
+        if *target == AgentTarget::All {
+            for expanded in ALL_AGENT_TARGETS {
+                push(*expanded, &mut targets);
+            }
+        } else {
+            push(*target, &mut targets);
+        }
+    }
+    for target in &targets {
         match target {
             AgentTarget::Codex => install_codex(root, scope, force, written, skipped)?,
             AgentTarget::Claude => install_claude(root, scope, force, written, skipped)?,

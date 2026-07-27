@@ -16,7 +16,7 @@ fn installs_configuration_for_all_supported_agents() {
         directory.path(),
         &InitOptions {
             force: false,
-            agent: AgentTarget::All,
+            agents: vec![AgentTarget::All],
         },
     )
     .expect("initialize project");
@@ -78,7 +78,7 @@ fn installs_global_skills_without_project_configuration() {
         directory.path(),
         &InitOptions {
             force: false,
-            agent: AgentTarget::All,
+            agents: vec![AgentTarget::All],
         },
     )
     .expect("install global skills");
@@ -128,7 +128,7 @@ fn hook_install_preserves_existing_settings_and_is_idempotent() {
 
     let options = InitOptions {
         force: false,
-        agent: AgentTarget::Claude,
+        agents: vec![AgentTarget::Claude],
     };
     initialize_project(directory.path(), &options).expect("first initialization");
     initialize_project(directory.path(), &options).expect("second initialization");
@@ -163,7 +163,7 @@ fn force_removes_only_legacy_forgeguard_skills() {
         directory.path(),
         &InitOptions {
             force: true,
-            agent: AgentTarget::Codex,
+            agents: vec![AgentTarget::Codex],
         },
     )
     .expect("migrate global skills");
@@ -185,7 +185,7 @@ fn existing_policy_is_preserved_without_force() {
         directory.path(),
         &InitOptions {
             force: false,
-            agent: AgentTarget::Codex,
+            agents: vec![AgentTarget::Codex],
         },
     )
     .expect("initialize project");
@@ -204,7 +204,7 @@ fn opencode_target_uses_shared_standards_without_unrelated_hooks() {
         directory.path(),
         &InitOptions {
             force: false,
-            agent: AgentTarget::OpenCode,
+            agents: vec![AgentTarget::OpenCode],
         },
     )
     .expect("initialize OpenCode");
@@ -230,7 +230,7 @@ fn antigravity_hook_merge_is_idempotent() {
     .expect("write hooks");
     let options = InitOptions {
         force: false,
-        agent: AgentTarget::Antigravity,
+        agents: vec![AgentTarget::Antigravity],
     };
 
     initialize_project(directory.path(), &options).expect("first initialization");
@@ -267,7 +267,7 @@ fn force_unlinks_legacy_symlink_without_removing_target() {
         directory.path(),
         &InitOptions {
             force: true,
-            agent: AgentTarget::Codex,
+            agents: vec![AgentTarget::Codex],
         },
     )
     .expect("migrate global skills");

@@ -149,7 +149,7 @@ pub fn render_hook_decision(agent: HookAgent, decision: &HookDecision) -> String
 /// `.forgeguard/`. Keep those artifacts out of version control without asking
 /// the user to configure anything: a self-ignoring `.forgeguard/.gitignore`,
 /// plus a `.forgeguard/` entry appended to an existing root `.gitignore`.
-fn ignore_forgeguard_artifacts(root: &Path) -> Result<()> {
+pub fn ignore_forgeguard_artifacts(root: &Path) -> Result<()> {
     let marker = root.join(".forgeguard/.gitignore");
     if !marker.exists() {
         if let Some(parent) = marker.parent() {

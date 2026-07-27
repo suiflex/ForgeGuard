@@ -1,4 +1,9 @@
-use std::{env, io::Read, path::PathBuf, process::ExitCode};
+use std::{
+    env,
+    io::{IsTerminal, Read, Write},
+    path::PathBuf,
+    process::ExitCode,
+};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -35,8 +40,9 @@ enum Commands {
         /// Install rules, skills, and hooks for supported agents under the user directory.
         #[arg(long)]
         global: bool,
-        #[arg(long, value_enum, default_value = "all")]
-        agent: AgentArg,
+        /// Agents to install for. Omit in a terminal to pick interactively.
+        #[arg(long, value_enum)]
+        agent: Option<AgentArg>,
         #[arg(long)]
         json: bool,
     },
@@ -136,11 +142,18 @@ fn execute() -> Result<ExitCode> {
             agent,
             json,
         } => {
-            let options = InitOptions {
-                force,
-                agent: agent.into(),
+            // Interactive wizard only when nothing was specified and we own a
+            // terminal. Explicit flags, --json, or a pipe keep the old behavior
+            // (default `all`) so scripts and CI are never prompted.
+            let interactive =
+                agent.is_none() && !global && !json && std::io::stdout().is_terminal();
+            let (use_global, agents, add_gitignore) = if interactive {
+                run_init_wizard()?
+            } else {
+                (global, vec![agent.unwrap_or(AgentArg::All).into()], false)
             };
-            if global {
+            let options = InitOptions { force, agents };
+            if use_global {
                 let home = home_directory()?;
                 let report = initialize_global(&home, &options)?;
                 if json {
@@ -154,11 +167,17 @@ fn execute() -> Result<ExitCode> {
                 }
             } else {
                 let report = initialize_project(&root, &options)?;
+                if add_gitignore {
+                    forgeguard_core::ignore_forgeguard_artifacts(&root)?;
+                }
                 if json {
                     println!("{}", serde_json::to_string_pretty(&report)?);
                 } else {
                     println!("ForgeGuard initialized at {}", root.display());
                     render_file_changes(&report.files_written, &report.files_skipped);
+                    if add_gitignore {
+                        println!("  ignored .forgeguard/ in .gitignore");
+                    }
                     println!();
                     print!("{}", render_detection(&report.detection));
                 }
@@ -347,6 +366,109 @@ impl From<HookAgentArg> for HookAgent {
     }
 }
 
+/// The five installable agents, in menu order. `AgentArg::All` is offered
+/// separately as the `all` shortcut, so it is not part of this table.
+const AGENT_MENU: &[(&str, AgentTarget)] = &[
+    ("codex", AgentTarget::Codex),
+    ("claude", AgentTarget::Claude),
+    ("cursor", AgentTarget::Cursor),
+    ("opencode", AgentTarget::OpenCode),
+    ("antigravity", AgentTarget::Antigravity),
+];
+
+// ponytail: line-based prompt; add TUI multiselect only if UX complaint.
+fn run_init_wizard() -> Result<(bool, Vec<AgentTarget>, bool)> {
+    println!("ForgeGuard init");
+    let use_global = prompt_choice(
+        "Where do you want to install?",
+        &["This repository (default)", "Global (user directory)"],
+    )? == 1;
+
+    println!("\nWhich agents? (comma-separated numbers, or 'all')");
+    for (index, (name, _)) in AGENT_MENU.iter().enumerate() {
+        println!("  {}) {name}", index + 1);
+    }
+    let agents = parse_agent_selection(&prompt_line("> ")?);
+
+    // The gitignore entry only makes sense for a project checkout.
+    let add_gitignore = !use_global && prompt_yes_no("Add .forgeguard/ to .gitignore?", true)?;
+
+    Ok((use_global, agents, add_gitignore))
+}
+
+/// Map a comma-separated selection (`"1,3"`, `"all"`, empty) onto concrete
+/// agents. Unknown or out-of-range entries are ignored; an empty result falls
+/// back to `All` so a stray Enter never installs nothing.
+fn parse_agent_selection(input: &str) -> Vec<AgentTarget> {
+    let input = input.trim();
+    if input.is_empty() || input.eq_ignore_ascii_case("all") {
+        return vec![AgentTarget::All];
+    }
+    let mut selected: Vec<AgentTarget> = Vec::new();
+    for token in input.split(',') {
+        let token = token.trim();
+        if token.eq_ignore_ascii_case("all") {
+            return vec![AgentTarget::All];
+        }
+        let Ok(number) = token.parse::<usize>() else {
+            continue;
+        };
+        if let Some((_, target)) = AGENT_MENU.get(number.wrapping_sub(1)) {
+            if !selected.contains(target) {
+                selected.push(*target);
+            }
+        }
+    }
+    if selected.is_empty() {
+        vec![AgentTarget::All]
+    } else {
+        selected
+    }
+}
+
+fn prompt_choice(question: &str, options: &[&str]) -> Result<usize> {
+    println!("\n{question}");
+    for (index, option) in options.iter().enumerate() {
+        println!("  {}) {option}", index + 1);
+    }
+    loop {
+        let answer = prompt_line("> ")?;
+        let answer = answer.trim();
+        if answer.is_empty() {
+            return Ok(0);
+        }
+        if let Ok(number) = answer.parse::<usize>() {
+            if (1..=options.len()).contains(&number) {
+                return Ok(number - 1);
+            }
+        }
+        println!("Enter a number between 1 and {}.", options.len());
+    }
+}
+
+fn prompt_yes_no(question: &str, default_yes: bool) -> Result<bool> {
+    let hint = if default_yes { "[Y/n]" } else { "[y/N]" };
+    loop {
+        let answer = prompt_line(&format!("\n{question} {hint} "))?;
+        match answer.trim().to_ascii_lowercase().as_str() {
+            "" => return Ok(default_yes),
+            "y" | "yes" => return Ok(true),
+            "n" | "no" => return Ok(false),
+            _ => println!("Please answer y or n."),
+        }
+    }
+}
+
+fn prompt_line(prompt: &str) -> Result<String> {
+    print!("{prompt}");
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .context("failed to read input")?;
+    Ok(line)
+}
+
 fn home_directory() -> Result<PathBuf> {
     env::var_os("HOME")
         .or_else(|| env::var_os("USERPROFILE"))
@@ -360,5 +482,30 @@ fn render_file_changes(written: &[String], skipped: &[String]) {
     }
     for path in skipped {
         println!("  skipped {path} (already exists)");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_agent_selection, AgentTarget};
+
+    #[test]
+    fn parses_number_list() {
+        assert_eq!(
+            parse_agent_selection("1,3"),
+            vec![AgentTarget::Codex, AgentTarget::Cursor]
+        );
+    }
+
+    #[test]
+    fn all_and_empty_and_garbage_default_to_all() {
+        assert_eq!(parse_agent_selection("all"), vec![AgentTarget::All]);
+        assert_eq!(parse_agent_selection("  "), vec![AgentTarget::All]);
+        assert_eq!(parse_agent_selection("9,foo"), vec![AgentTarget::All]);
+    }
+
+    #[test]
+    fn dedups_and_skips_out_of_range() {
+        assert_eq!(parse_agent_selection("2,2,7"), vec![AgentTarget::Claude]);
     }
 }

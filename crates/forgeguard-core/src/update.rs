@@ -1,0 +1,170 @@
+//! Optional, non-blocking update notifications.
+//!
+//! The hot path (the Stop hook) only ever reads a local cache, so it makes no
+//! network call and adds no latency. A stale cache is refreshed by a detached
+//! background process, and `doctor`/`init` refresh it in the foreground. The
+//! latest release is discovered with `git ls-remote` so no HTTP dependency,
+//! API token, or rate-limited endpoint is required.
+
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use serde::{Deserialize, Serialize};
+
+const REPOSITORY_URL: &str = "https://github.com/suiflex/ForgeGuard";
+const CACHE_RELATIVE: &str = ".forgeguard/update-check.json";
+const INSTALL_COMMAND: &str =
+    "curl -fsSL https://raw.githubusercontent.com/suiflex/ForgeGuard/main/install.sh | sh";
+const THROTTLE_SECONDS: u64 = 86_400;
+
+pub fn current_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UpdateCache {
+    checked_at: u64,
+    latest: String,
+}
+
+/// One-line optional notice built from the cached latest version. Never touches
+/// the network; safe to call on every hook invocation.
+pub fn cached_notice(home: &Path) -> Option<String> {
+    let cache = read_cache(home)?;
+    notice(current_version(), &cache.latest)
+}
+
+/// Refresh the cache when it is stale (or always when `force`), then return the
+/// current notice. Performs a network lookup only when a refresh is due. Used by
+/// `doctor`, `init`, and the detached `update` command.
+pub fn refresh(home: &Path, force: bool) -> Option<String> {
+    if force || is_stale(home) {
+        if let Some(latest) = fetch_latest_version() {
+            write_cache(
+                home,
+                &UpdateCache {
+                    checked_at: now_seconds(),
+                    latest,
+                },
+            );
+        }
+    }
+    cached_notice(home)
+}
+
+/// Launch a detached refresh when the cache is missing or older than the
+/// throttle window. Fire-and-forget: the caller is never blocked and no output
+/// is inherited, so the hook stays fast and silent.
+pub fn spawn_refresh_if_stale(home: &Path) {
+    if !is_stale(home) {
+        return;
+    }
+    let Ok(executable) = std::env::current_exe() else {
+        return;
+    };
+    let _ = Command::new(executable)
+        .arg("update")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+}
+
+fn is_stale(home: &Path) -> bool {
+    match read_cache(home) {
+        Some(cache) => now_seconds().saturating_sub(cache.checked_at) >= THROTTLE_SECONDS,
+        None => true,
+    }
+}
+
+/// Discover the highest `vX.Y.Z` release tag via `git ls-remote`.
+fn fetch_latest_version() -> Option<String> {
+    let output = Command::new("git")
+        .args(["ls-remote", "--tags", "--refs", REPOSITORY_URL])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.rsplit("refs/tags/").next())
+        .filter_map(|tag| parse_version(tag.strip_prefix('v').unwrap_or(tag)))
+        .max()
+        .map(|(major, minor, patch)| format!("{major}.{minor}.{patch}"))
+}
+
+fn notice(current: &str, latest: &str) -> Option<String> {
+    if parse_version(latest)? > parse_version(current)? {
+        Some(format!(
+            "Optional: ForgeGuard {latest} is available (current {current}). Update: {INSTALL_COMMAND}"
+        ))
+    } else {
+        None
+    }
+}
+
+fn parse_version(value: &str) -> Option<(u64, u64, u64)> {
+    let core = value.trim().split(['-', '+']).next()?;
+    let mut parts = core.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next().unwrap_or("0").parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
+fn cache_path(home: &Path) -> PathBuf {
+    home.join(CACHE_RELATIVE)
+}
+
+fn read_cache(home: &Path) -> Option<UpdateCache> {
+    let text = fs::read_to_string(cache_path(home)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn write_cache(home: &Path, cache: &UpdateCache) {
+    let path = cache_path(home);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(text) = serde_json::to_string_pretty(cache) {
+        let _ = fs::write(path, text);
+    }
+}
+
+fn now_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_plain_and_prefixed_and_prerelease_versions() {
+        assert_eq!(parse_version("0.3.0"), Some((0, 3, 0)));
+        assert_eq!(parse_version("1.2"), Some((1, 2, 0)));
+        assert_eq!(parse_version("2.0.1-rc.1"), Some((2, 0, 1)));
+        assert_eq!(parse_version("not-a-version"), None);
+        assert_eq!(parse_version("1.2.3.4"), None);
+    }
+
+    #[test]
+    fn notice_only_appears_for_a_strictly_newer_version() {
+        assert!(notice("0.2.0", "0.3.0").is_some());
+        assert!(notice("0.2.0", "0.2.0").is_none());
+        assert!(notice("0.3.0", "0.2.9").is_none());
+    }
+}

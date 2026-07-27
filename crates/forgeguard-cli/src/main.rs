@@ -73,6 +73,8 @@ enum Commands {
         #[command(subcommand)]
         command: HookCommands,
     },
+    /// Check for a newer ForgeGuard release (optional; never required).
+    Update,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -161,6 +163,9 @@ fn execute() -> Result<ExitCode> {
                     print!("{}", render_detection(&report.detection));
                 }
             }
+            if !json {
+                print_update_notice();
+            }
             Ok(ExitCode::SUCCESS)
         }
         Commands::Detect { json } => {
@@ -183,6 +188,7 @@ fn execute() -> Result<ExitCode> {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
                 print!("{}", render_doctor(&report));
+                print_update_notice();
             }
             Ok(if report.healthy {
                 ExitCode::SUCCESS
@@ -234,6 +240,17 @@ fn execute() -> Result<ExitCode> {
         Commands::Hook {
             command: HookCommands::Stop { agent },
         } => execute_stop_hook(&root, agent.into()),
+        Commands::Update => {
+            let home = home_directory()?;
+            match forgeguard_core::update::refresh(&home, true) {
+                Some(notice) => println!("{notice}"),
+                None => println!(
+                    "ForgeGuard {} is up to date.",
+                    forgeguard_core::update::current_version()
+                ),
+            }
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 
@@ -242,6 +259,10 @@ fn execute_stop_hook(root: &std::path::Path, agent: HookAgent) -> Result<ExitCod
     std::io::stdin()
         .read_to_string(&mut input)
         .context("failed to read hook input")?;
+    let home = home_directory().ok();
+    if let Some(home) = &home {
+        forgeguard_core::update::spawn_refresh_if_stale(home);
+    }
     let decision = match evaluate_stop_hook(root, &input) {
         Ok((decision, _cache_hit)) => decision,
         Err(error) => {
@@ -252,11 +273,34 @@ fn execute_stop_hook(root: &std::path::Path, agent: HookAgent) -> Result<ExitCod
             ))
         }
     };
+    // A passing gate stays silent; only surface the optional notice when the hook
+    // is already returning feedback, so clean turns keep zero noise.
+    let decision = match decision {
+        HookDecision::Block(reason) => {
+            HookDecision::Block(append_update_notice(reason, home.as_deref()))
+        }
+        HookDecision::Pass => HookDecision::Pass,
+    };
     let output = render_hook_decision(agent, &decision);
     if !output.is_empty() {
         println!("{output}");
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn append_update_notice(reason: String, home: Option<&std::path::Path>) -> String {
+    match home.and_then(forgeguard_core::update::cached_notice) {
+        Some(notice) => format!("{reason}\n\n{notice}"),
+        None => reason,
+    }
+}
+
+fn print_update_notice() {
+    if let Ok(home) = home_directory() {
+        if let Some(notice) = forgeguard_core::update::refresh(&home, false) {
+            println!("{notice}");
+        }
+    }
 }
 
 fn render_gate_output(report: &GateReport, json: bool, output: OutputArg) -> Result<()> {

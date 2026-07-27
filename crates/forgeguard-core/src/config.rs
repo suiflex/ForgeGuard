@@ -5,21 +5,26 @@ use serde::{Deserialize, Serialize};
 
 pub const CONFIG_DIR: &str = ".forgeguard";
 pub const CONFIG_FILE: &str = ".forgeguard/config.toml";
+pub const GLOBAL_CONFIG_FILE: &str = ".forgeguard/config.toml";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum GuardMode {
-    Lite,
+    /// Token-friendly default: report static findings but block only failed required commands.
     #[default]
-    Guard,
+    Default,
+    /// Report-only mode: never blocks; useful for baselining and cleanup lists.
+    Lite,
+    /// Full guard mode: blocks failed required commands and error-level deterministic findings.
+    #[serde(alias = "guard")]
     Strict,
 }
 
 impl GuardMode {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Default => "default",
             Self::Lite => "lite",
-            Self::Guard => "guard",
             Self::Strict => "strict",
         }
     }
@@ -85,7 +90,7 @@ impl ForgeGuardConfig {
     pub fn new(project_name: impl Into<String>, commands: Vec<CommandConfig>) -> Self {
         Self {
             version: default_config_version(),
-            mode: GuardMode::Guard,
+            mode: GuardMode::Default,
             project: ProjectConfig {
                 name: project_name.into(),
             },
@@ -95,19 +100,35 @@ impl ForgeGuardConfig {
     }
 
     pub fn load(root: &Path) -> Result<Self> {
-        let path = root.join(CONFIG_FILE);
-        let source = fs::read_to_string(&path)
+        Self::load_from_path(&root.join(CONFIG_FILE))
+    }
+
+    pub fn save(&self, root: &Path) -> Result<()> {
+        self.save_to_path(&root.join(CONFIG_FILE))
+    }
+
+    pub fn load_global(home: &Path) -> Result<Self> {
+        Self::load_from_path(&home.join(GLOBAL_CONFIG_FILE))
+    }
+
+    pub fn save_global(&self, home: &Path) -> Result<()> {
+        self.save_to_path(&home.join(GLOBAL_CONFIG_FILE))
+    }
+
+    fn load_from_path(path: &Path) -> Result<Self> {
+        let source = fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
         toml::from_str(&source).with_context(|| format!("failed to parse {}", path.display()))
     }
 
-    pub fn save(&self, root: &Path) -> Result<()> {
-        let directory = root.join(CONFIG_DIR);
-        fs::create_dir_all(&directory)
+    fn save_to_path(&self, path: &Path) -> Result<()> {
+        let directory = path
+            .parent()
+            .context("ForgeGuard config path has no parent")?;
+        fs::create_dir_all(directory)
             .with_context(|| format!("failed to create {}", directory.display()))?;
         let output = toml::to_string_pretty(self).context("failed to serialize configuration")?;
-        let path = root.join(CONFIG_FILE);
-        fs::write(&path, output).with_context(|| format!("failed to write {}", path.display()))
+        fs::write(path, output).with_context(|| format!("failed to write {}", path.display()))
     }
 }
 

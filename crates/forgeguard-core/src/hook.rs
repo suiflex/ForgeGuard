@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 
 use crate::{
     config::{ForgeGuardConfig, CONFIG_FILE},
+    detect_project,
     git::{changed_files, worktree_fingerprint},
     report::{render_gate_compact, COMPACT_MAX_CHARS},
     run_gate, GateOptions, GateStatus,
@@ -71,7 +72,22 @@ pub fn evaluate_stop_hook(fallback_root: &Path, input: &str) -> Result<(HookDeci
         }
     }
 
-    let config = ForgeGuardConfig::load(&root)?;
+    // Explicit config wins; otherwise gate any git repo that contains code using
+    // an auto-detected, in-memory config so no per-repo setup is required.
+    let config = if root.join(CONFIG_FILE).exists() {
+        ForgeGuardConfig::load(&root)?
+    } else {
+        let detection = detect_project(&root)?;
+        if detection.languages.is_empty() {
+            return Ok((HookDecision::Pass, false));
+        }
+        ignore_forgeguard_artifacts(&root)?;
+        let name = root
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("project");
+        ForgeGuardConfig::new(name, detection.suggested_commands)
+    };
     let report = run_gate(
         &root,
         &config,
@@ -129,6 +145,36 @@ pub fn render_hook_decision(agent: HookAgent, decision: &HookDecision) -> String
     }
 }
 
+/// In zero-config mode the gate still writes `cache/` and `reports/` under
+/// `.forgeguard/`. Keep those artifacts out of version control without asking
+/// the user to configure anything: a self-ignoring `.forgeguard/.gitignore`,
+/// plus a `.forgeguard/` entry appended to an existing root `.gitignore`.
+fn ignore_forgeguard_artifacts(root: &Path) -> Result<()> {
+    let marker = root.join(".forgeguard/.gitignore");
+    if !marker.exists() {
+        if let Some(parent) = marker.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&marker, "*\n")?;
+    }
+    let root_ignore = root.join(".gitignore");
+    if root_ignore.is_file() {
+        let current = fs::read_to_string(&root_ignore).unwrap_or_default();
+        let already = current
+            .lines()
+            .any(|line| line.trim().trim_end_matches('/') == ".forgeguard");
+        if !already {
+            let mut updated = current;
+            if !updated.is_empty() && !updated.ends_with('\n') {
+                updated.push('\n');
+            }
+            updated.push_str(".forgeguard/\n");
+            fs::write(&root_ignore, updated)?;
+        }
+    }
+    Ok(())
+}
+
 fn find_project_root(fallback_root: &Path, payload: &Value) -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(cwd) = payload.get("cwd").and_then(Value::as_str) {
@@ -150,7 +196,7 @@ fn find_project_root(fallback_root: &Path, payload: &Value) -> Option<PathBuf> {
         };
         start
             .ancestors()
-            .find(|path| path.join(CONFIG_FILE).is_file())
+            .find(|path| path.join(".git").exists() || path.join(CONFIG_FILE).is_file())
             .map(Path::to_path_buf)
     })
 }

@@ -1,11 +1,11 @@
 use std::{
     env,
-    io::{IsTerminal, Read},
-    path::PathBuf,
+    io::{self, IsTerminal, Read, Write},
+    path::{Path, PathBuf},
     process::ExitCode,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use forgeguard_core::{
     config::{ForgeGuardConfig, CONFIG_FILE},
@@ -13,7 +13,7 @@ use forgeguard_core::{
     git::changed_files,
     initialize_global, initialize_project, render_hook_decision,
     report::{render_detection, render_doctor, render_gate, render_gate_compact},
-    run_doctor, run_gate, AgentTarget, GateOptions, GateReport, GateStatus, HookAgent,
+    run_doctor, run_gate, AgentTarget, GateOptions, GateReport, GateStatus, GuardMode, HookAgent,
     HookDecision, InitOptions,
 };
 
@@ -48,6 +48,15 @@ enum Commands {
     },
     /// Detect languages, frameworks, database tools, tests, and quality commands.
     Detect {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check or change ForgeGuard mode.
+    Mode {
+        #[arg(value_enum)]
+        mode: Option<ModeArg>,
+        #[arg(long)]
+        global: bool,
         #[arg(long)]
         json: bool,
     },
@@ -99,6 +108,13 @@ enum OutputArg {
     Full,
     Compact,
     Quiet,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ModeArg {
+    Default,
+    Lite,
+    Strict,
 }
 
 #[derive(Debug, Subcommand)]
@@ -164,6 +180,9 @@ fn execute() -> Result<ExitCode> {
                         report.home.display()
                     );
                     render_file_changes(&report.files_written, &report.files_skipped);
+                    if io::stdin().is_terminal() {
+                        configure_mode_interactive(&home, true)?;
+                    }
                 }
             } else {
                 let report = initialize_project(&root, &options)?;
@@ -180,6 +199,9 @@ fn execute() -> Result<ExitCode> {
                     }
                     println!();
                     print!("{}", render_detection(&report.detection));
+                    if io::stdin().is_terminal() {
+                        configure_mode_interactive(&root, false)?;
+                    }
                 }
             }
             if !json {
@@ -196,6 +218,7 @@ fn execute() -> Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
+        Commands::Mode { mode, global, json } => execute_mode(&root, mode, global, json),
         Commands::Doctor { json } => {
             let config = if root.join(CONFIG_FILE).exists() {
                 Some(ForgeGuardConfig::load(&root)?)
@@ -273,9 +296,111 @@ fn execute() -> Result<ExitCode> {
     }
 }
 
-fn execute_stop_hook(root: &std::path::Path, agent: HookAgent) -> Result<ExitCode> {
+fn execute_mode(root: &Path, mode: Option<ModeArg>, global: bool, json: bool) -> Result<ExitCode> {
+    let target = if global {
+        home_directory()?
+    } else {
+        root.to_path_buf()
+    };
+    let mut config = load_or_create_config(&target, global)?;
+    let selected = match mode {
+        Some(mode) => mode.into(),
+        None if io::stdin().is_terminal() && !json => prompt_for_mode(config.mode)?,
+        None => config.mode,
+    };
+    config.mode = selected;
+    save_config(&target, global, &config)?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "scope": if global { "global" } else { "project" },
+                "mode": config.mode.as_str(),
+            })
+        );
+    } else {
+        println!(
+            "ForgeGuard {} mode set to {}.",
+            if global { "global" } else { "project" },
+            config.mode.as_str()
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn configure_mode_interactive(target: &Path, global: bool) -> Result<()> {
+    let mut config = load_or_create_config(target, global)?;
+    println!();
+    let mode = prompt_for_mode(config.mode)?;
+    config.mode = mode;
+    save_config(target, global, &config)?;
+    println!(
+        "ForgeGuard {} mode set to {}.",
+        if global { "global" } else { "project" },
+        config.mode.as_str()
+    );
+    Ok(())
+}
+
+fn prompt_for_mode(default: GuardMode) -> Result<GuardMode> {
+    println!("ForgeGuard mode");
+    println!("  1) default - token-friendly; report static findings, block only failed required commands");
+    println!("  2) lite    - report-only; never blocks");
+    println!("  3) strict  - block failed required commands and error-level findings");
+    print!("Choose mode [{}]: ", default.as_str());
+    io::stdout().flush()?;
+
     let mut input = String::new();
-    std::io::stdin()
+    io::stdin().read_line(&mut input)?;
+    parse_mode(input.trim()).map(|mode| mode.unwrap_or(default))
+}
+
+fn parse_mode(value: &str) -> Result<Option<GuardMode>> {
+    let mode = match value.trim().to_ascii_lowercase().as_str() {
+        "" => return Ok(None),
+        "1" | "default" => GuardMode::Default,
+        "2" | "lite" => GuardMode::Lite,
+        "3" | "strict" | "guard" => GuardMode::Strict,
+        other => bail!("unknown mode `{other}`; expected default, lite, or strict"),
+    };
+    Ok(Some(mode))
+}
+
+fn load_or_create_config(target: &Path, global: bool) -> Result<ForgeGuardConfig> {
+    if global {
+        return match ForgeGuardConfig::load_global(target) {
+            Ok(config) => Ok(config),
+            Err(_) => Ok(ForgeGuardConfig::new("global", Vec::new())),
+        };
+    }
+    match ForgeGuardConfig::load(target) {
+        Ok(config) => Ok(config),
+        Err(_) => {
+            let detection = detect_project(target)?;
+            let project_name = target
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("project");
+            Ok(ForgeGuardConfig::new(
+                project_name,
+                detection.suggested_commands,
+            ))
+        }
+    }
+}
+
+fn save_config(target: &Path, global: bool, config: &ForgeGuardConfig) -> Result<()> {
+    if global {
+        config.save_global(target)
+    } else {
+        config.save(target)
+    }
+}
+
+fn execute_stop_hook(root: &Path, agent: HookAgent) -> Result<ExitCode> {
+    let mut input = String::new();
+    io::stdin()
         .read_to_string(&mut input)
         .context("failed to read hook input")?;
     let home = home_directory().ok();
@@ -307,7 +432,7 @@ fn execute_stop_hook(root: &std::path::Path, agent: HookAgent) -> Result<ExitCod
     Ok(ExitCode::SUCCESS)
 }
 
-fn append_update_notice(reason: String, home: Option<&std::path::Path>) -> String {
+fn append_update_notice(reason: String, home: Option<&Path>) -> String {
     match home.and_then(forgeguard_core::update::cached_notice) {
         Some(notice) => format!("{reason}\n\n{notice}"),
         None => reason,
@@ -351,6 +476,16 @@ impl From<AgentArg> for AgentTarget {
             AgentArg::OpenCode => Self::OpenCode,
             AgentArg::Antigravity => Self::Antigravity,
             AgentArg::All => Self::All,
+        }
+    }
+}
+
+impl From<ModeArg> for GuardMode {
+    fn from(value: ModeArg) -> Self {
+        match value {
+            ModeArg::Default => Self::Default,
+            ModeArg::Lite => Self::Lite,
+            ModeArg::Strict => Self::Strict,
         }
     }
 }

@@ -371,6 +371,90 @@ fn render(checks: &[Check]) {
 }
 
 #[test]
+fn detects_python_requests_call_inside_loop() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("client.py"),
+        "import requests\ndef fetch(urls):\n    for url in urls:\n        requests.get(url)\n",
+    )
+    .expect("write source");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    assert!(findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-NET-001"));
+}
+
+#[test]
+fn detects_network_call_inside_python_comprehension() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("client.py"),
+        "import requests\ndef fetch(urls):\n    return [requests.get(url) for url in urls]\n",
+    )
+    .expect("write source");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    assert!(findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-NET-001"));
+}
+
+#[test]
+fn literal_range_bound_is_not_reported_as_quadratic() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("grid.py"),
+        "def grid():\n    for i in range(3):\n        for j in range(3):\n            print(i, j)\n",
+    )
+    .expect("write source");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    assert!(!findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-ALG-001"));
+}
+
+#[test]
+fn variable_range_bound_is_still_reported_as_quadratic() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("matrix.py"),
+        "def matrix(n, m):\n    for i in range(n):\n        for j in range(m):\n            print(i, j)\n",
+    )
+    .expect("write source");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    assert!(findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-ALG-001"));
+}
+
+#[test]
 fn malformed_source_reports_parse_skip_without_structural_claims() {
     let directory = tempdir().expect("temp directory");
     fs::write(directory.path().join("broken.rs"), "fn broken(\n").expect("write source");

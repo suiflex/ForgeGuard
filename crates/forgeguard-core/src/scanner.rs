@@ -281,7 +281,7 @@ impl Analyzer {
         while let Some((node, loop_depth)) = stack.pop() {
             let starts_loop = profile.is_loop(node.kind())
                 || call_name(node, source).is_some_and(|callee| profile.is_iteration_call(callee));
-            if starts_loop && loop_depth > 0 && !has_static_take_bound(node, source) {
+            if starts_loop && loop_depth > 0 && !has_static_bound(node, source) {
                 findings.push(finding_for_node(
                     "FG-ALG-001",
                     "Potential nested iteration",
@@ -483,7 +483,15 @@ impl LanguageProfile {
                 "for_expression" | "while_expression" | "loop_expression"
             ),
             Self::Go => kind == "for_statement",
-            Self::Python => matches!(kind, "for_statement" | "while_statement"),
+            Self::Python => matches!(
+                kind,
+                "for_statement"
+                    | "while_statement"
+                    | "list_comprehension"
+                    | "set_comprehension"
+                    | "dictionary_comprehension"
+                    | "generator_expression"
+            ),
             Self::Java => matches!(
                 kind,
                 "for_statement" | "enhanced_for_statement" | "while_statement" | "do_statement"
@@ -653,7 +661,17 @@ fn is_network_call(callee: &str, method: &str) -> bool {
     let method = normalized_method(method);
     let network_receiver = has_receiver(
         &normalized,
-        &["axios", "http", "client", "apiclient", "httpclient"],
+        &[
+            "axios",
+            "http",
+            "client",
+            "apiclient",
+            "httpclient",
+            "requests",
+            "httpx",
+            "urllib",
+            "session",
+        ],
     );
     network_receiver
         && matches!(
@@ -694,6 +712,38 @@ fn has_iteration_descendant(node: Node<'_>, source: &str) -> bool {
         );
     }
     false
+}
+
+fn has_static_bound(node: Node<'_>, source: &str) -> bool {
+    has_static_take_bound(node, source) || has_literal_range_iterable(node, source)
+}
+
+/// True when a direct child of the loop is `range(<int literals>)`, i.e. the loop
+/// bound is a compile-time constant and cannot grow multiplicatively.
+fn has_literal_range_iterable(node: Node<'_>, source: &str) -> bool {
+    (0..node.named_child_count())
+        .filter_map(|index| node.named_child(index as u32))
+        .any(|child| {
+            call_name(child, source).is_some_and(|callee| terminal_name(callee) == "range")
+                && all_integer_arguments(child)
+        })
+}
+
+fn all_integer_arguments(call: Node<'_>) -> bool {
+    let Some(arguments) = call.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut count = 0;
+    for index in 0..arguments.named_child_count() {
+        let Some(argument) = arguments.named_child(index as u32) else {
+            continue;
+        };
+        if argument.kind() != "integer" {
+            return false;
+        }
+        count += 1;
+    }
+    count > 0
 }
 
 fn has_static_take_bound(node: Node<'_>, source: &str) -> bool {

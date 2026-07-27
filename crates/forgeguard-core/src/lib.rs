@@ -10,6 +10,7 @@ pub mod model;
 pub mod report;
 pub mod runner;
 pub mod scanner;
+pub mod update;
 
 pub use config::{CommandConfig, ForgeGuardConfig, GuardMode};
 pub use detector::{detect_project, ProjectDetection};

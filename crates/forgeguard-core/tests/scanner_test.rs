@@ -642,3 +642,126 @@ for (const user of users) {
         .iter()
         .any(|finding| finding.rule_id == "FG-DB-001"));
 }
+
+#[test]
+fn scans_svelte_component_script_with_correct_line_numbers() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("Users.svelte"),
+        r#"<script lang="ts">
+  export let users = [];
+  export let db;
+  async function load() {
+    for (const user of users) {
+      await db.query("SELECT id FROM profiles WHERE user_id = ?", [user.id]);
+    }
+  }
+</script>
+
+<ul>
+  {#each users as user}
+    <li>{user.name}</li>
+  {/each}
+</ul>
+"#,
+    )
+    .expect("write source");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    let db = findings
+        .iter()
+        .find(|finding| finding.rule_id == "FG-DB-001" && finding.severity == Severity::Error)
+        .expect("db-in-loop flagged inside svelte <script>");
+    // The db.query call sits on line 6 of the original file; masking must
+    // preserve line numbers so the finding points back at the real source.
+    assert_eq!(db.line, 6);
+}
+
+#[test]
+fn detects_zig_and_solidity_nested_loops() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("pair.zig"),
+        r#"pub fn f(a: []const u8, b: []const u8) void {
+    for (a) |x| {
+        for (b) |y| {
+            _ = x;
+            _ = y;
+        }
+    }
+}
+"#,
+    )
+    .expect("write zig");
+    fs::write(
+        directory.path().join("Pair.sol"),
+        r#"contract C {
+    function f(uint[] memory a, uint[] memory b) public pure {
+        for (uint i = 0; i < a.length; i++) {
+            for (uint j = 0; j < b.length; j++) {
+                a[i] = b[j];
+            }
+        }
+    }
+}
+"#,
+    )
+    .expect("write solidity");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    assert!(findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-ALG-001"
+            && finding.path.to_string_lossy().ends_with("pair.zig")));
+    assert!(findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-ALG-001"
+            && finding.path.to_string_lossy().ends_with("Pair.sol")));
+}
+
+#[test]
+fn flags_large_inline_data_literal_but_not_small_one() {
+    let directory = tempdir().expect("temp directory");
+
+    // 60 objects on one line each -> exceeds the 50-element threshold.
+    let mut big = String::from("export const users = [\n");
+    for i in 0..60 {
+        big.push_str(&format!("  {{ id: {i}, name: \"user{i}\" }},\n"));
+    }
+    big.push_str("];\n");
+    fs::write(directory.path().join("mock.ts"), &big).expect("write big");
+
+    fs::write(
+        directory.path().join("small.ts"),
+        "export const roles = [\n  { id: 1, name: \"admin\" },\n  { id: 2, name: \"user\" },\n];\n",
+    )
+    .expect("write small");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    assert!(findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-ARCH-001"
+            && finding.path.to_string_lossy().ends_with("mock.ts")));
+    assert!(!findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-ARCH-001"
+            && finding.path.to_string_lossy().ends_with("small.ts")));
+}

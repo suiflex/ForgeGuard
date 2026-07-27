@@ -113,6 +113,53 @@ fn agent_protocols_are_silent_or_structured() {
     );
 }
 
+#[test]
+fn auto_gate_runs_without_config_and_ignores_artifacts() {
+    let directory = tempdir().expect("temp directory");
+    git_init(directory.path());
+    // A pre-existing root .gitignore must be appended to, not clobbered.
+    fs::write(directory.path().join(".gitignore"), "node_modules/\n").expect("write gitignore");
+    fs::write(
+        directory.path().join("service.ts"),
+        "for (const user of users) { await db.query('SELECT id FROM users WHERE id = 1'); }\n",
+    )
+    .expect("write source");
+
+    let input = format!(
+        r#"{{"cwd":"{}","executionNum":1}}"#,
+        directory.path().display()
+    );
+    let (decision, _) = evaluate_stop_hook(directory.path(), &input).expect("evaluate hook");
+    assert!(matches!(decision, HookDecision::Block(_)));
+
+    // No manual setup, yet artifacts are kept out of version control.
+    let marker = fs::read_to_string(directory.path().join(".forgeguard/.gitignore"))
+        .expect("read forgeguard gitignore");
+    assert_eq!(marker.trim(), "*");
+    let root_ignore =
+        fs::read_to_string(directory.path().join(".gitignore")).expect("read root gitignore");
+    assert!(root_ignore.contains("node_modules/"));
+    assert!(root_ignore
+        .lines()
+        .any(|line| line.trim().trim_end_matches('/') == ".forgeguard"));
+    assert!(!directory.path().join(".forgeguard/config.toml").exists());
+}
+
+#[test]
+fn auto_gate_passes_for_repo_without_code() {
+    let directory = tempdir().expect("temp directory");
+    git_init(directory.path());
+    fs::write(directory.path().join("README.md"), "# docs only\n").expect("write readme");
+
+    let input = format!(
+        r#"{{"cwd":"{}","executionNum":1}}"#,
+        directory.path().display()
+    );
+    let (decision, _) = evaluate_stop_hook(directory.path(), &input).expect("evaluate hook");
+    assert_eq!(decision, HookDecision::Pass);
+    assert!(!directory.path().join(".forgeguard").exists());
+}
+
 fn git_init(root: &std::path::Path) {
     let status = Command::new("git")
         .args(["init", "--quiet"])

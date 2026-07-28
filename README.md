@@ -1,6 +1,15 @@
-# ForgeGuard
+# ForgeGuard — engineering discipline for AI coding agents
 
-**Token-efficient engineering discipline for AI coding agents.**
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-dark.svg">
+    <img src="assets/brand/logo-light.svg" alt="ForgeGuard" width="360">
+  </picture>
+</p>
+
+<p align="center">
+  <strong>Token-efficient quality layer for AI coding agents.<br>Codex · Claude Code · Cursor · OpenCode · Antigravity — one Rust binary, no LLM calls.</strong>
+</p>
 
 ForgeGuard is a language- and framework-agnostic quality layer for Codex, Claude Code, Cursor, OpenCode, Antigravity, and agents that support `AGENTS.md` or Agent Skills. It applies to backend services, web frontends, native and cross-platform mobile apps, AI systems, data code, automation scripts, CLIs, and infrastructure code.
 
@@ -89,6 +98,65 @@ Installers use GitHub Release binaries produced for Linux, macOS, and Windows on
 ```bash
 cargo install --path crates/forgeguard-cli
 ```
+
+## Updating
+
+`forgeguard update` only *checks* whether a newer release exists and prints a one-line
+notice; it never installs anything. Upgrading is re-running the installer, then refreshing the
+assets ForgeGuard already wrote.
+
+### Upgrade the binary and global assets
+
+Re-run the one-line installer. It downloads the latest release binary for the current OS and
+CPU, verifies its SHA-256 checksum, and updates the user `PATH`.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/suiflex/ForgeGuard/main/install.sh | sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/suiflex/ForgeGuard/main/install.ps1 | iex
+```
+
+The installer refreshes the binary but does not overwrite global rules or skills that already
+exist. To re-apply the newer bundled global skills, policies, and hooks over an existing global
+install, force it:
+
+```bash
+forgeguard init --global --agent all --force
+```
+
+Source builds upgrade with:
+
+```bash
+cargo install --path crates/forgeguard-cli
+```
+
+Check the installed version at any time:
+
+```bash
+forgeguard update
+```
+
+### Refresh an already-initialized project
+
+New releases can ship updated policy files and engineering skills. A plain `forgeguard init`
+never overwrites existing ForgeGuard files, so re-initialize with `--force` to pull the newer
+bundle into a repository that was set up by an older version:
+
+```bash
+cd your-project
+forgeguard init --agent all --force
+forgeguard doctor
+```
+
+`--force` overwrites the ForgeGuard-owned policy and skill files and prunes obsolete
+role-skill directories.
+
+> **Warning:** `--force` also regenerates `.forgeguard/config.toml` from detection defaults,
+> resetting any custom commands and operating mode. If you customized the config, back it up
+> first, or re-apply the mode afterward with `forgeguard mode default|lite|strict`. A committed
+> `.forgeguard/baseline.json` is not touched.
 
 ## Quick start
 

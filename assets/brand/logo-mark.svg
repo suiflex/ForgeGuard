@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="ForgeGuard">
+  <rect width="32" height="32" rx="7" fill="#0a0a0a"/>
+  <path d="M8 8.5 H24 V17 C24 22 20.5 24.8 16 26.5 C11.5 24.8 8 22 8 17 Z" fill="#4ade80"/>
+  <g fill="none" stroke="#0a0a0a" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9.6 10.2 L13.2 12.4" stroke-width="2.8"/>
+    <path d="M13.2 12.4 C 19 13.2, 20 18, 15.4 18.2 C 12.4 18.3, 13 21.4, 18.4 21.6" stroke-width="1.9"/>
+    <path d="M18.4 21.6 L21.2 20.8 M18.4 21.6 L19.9 23.9" stroke-width="1.5"/>
+  </g>
+</svg>

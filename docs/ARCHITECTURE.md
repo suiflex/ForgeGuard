@@ -16,6 +16,7 @@ request
   → implementation cycle
   → Stop hook
   → changed-source scanning
+  → committed baseline filtering
   → configured quality commands
   → mode-aware gate decision
   → silent pass or bounded agent feedback

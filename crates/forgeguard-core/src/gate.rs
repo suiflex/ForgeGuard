@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 use crate::{
+    baseline::Baseline,
     config::{ForgeGuardConfig, GuardMode},
     model::{GateReport, GateStatus, GateSummary, Severity},
     runner::run_checks,
@@ -30,6 +31,10 @@ pub fn run_gate(
     findings.dedup_by(|left, right| {
         left.rule_id == right.rule_id && left.path == right.path && left.line == right.line
     });
+    let findings_baselined = match Baseline::load(root)? {
+        Some(baseline) => baseline.filter(&mut findings),
+        None => 0,
+    };
     let checks = if options.skip_commands {
         Vec::new()
     } else {
@@ -68,6 +73,7 @@ pub fn run_gate(
             errors,
             warnings,
             info,
+            findings_baselined,
             checks_passed,
             checks_failed,
         },

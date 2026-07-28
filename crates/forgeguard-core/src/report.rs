@@ -33,6 +33,13 @@ pub fn render_gate(report: &GateReport) -> String {
         "Findings: {} error(s), {} warning(s), {} info",
         report.summary.errors, report.summary.warnings, report.summary.info
     );
+    if report.summary.findings_baselined > 0 {
+        let _ = writeln!(
+            output,
+            "Baseline: {} existing finding(s) hidden",
+            report.summary.findings_baselined
+        );
+    }
     let _ = writeln!(
         output,
         "Checks: {} passed, {} failed",

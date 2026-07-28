@@ -56,6 +56,7 @@ A blocked gate may cause the host agent to use another turn to fix real failures
 - Static rules for nested iteration, repeated linear lookup, sorting in loops, database I/O in loops, external requests in loops, unbounded fan-out, `SELECT *`, and potential duplicated blocks.
 - Automatic formatter, linter, type-check, test, and build command discovery.
 - `default`, `lite`, and `strict` operating modes with project and global persistence.
+- Committed finding baselines for adopting strict gates without accepting new debt.
 - Interactive mode selection during `forgeguard init` and via `forgeguard mode`.
 - Human-readable and JSON reports.
 
@@ -128,11 +129,26 @@ Produce bounded agent-facing output:
 forgeguard gate --changed --output compact
 ```
 
+Record current static findings, then report only new findings:
+
+```bash
+forgeguard baseline create
+git add .forgeguard/baseline.json
+forgeguard gate
+```
+
+Replace a stale baseline after reviewing current findings:
+
+```bash
+forgeguard baseline create --force
+```
+
 ## Generated project structure
 
 ```text
 your-project/
 ├── .forgeguard/config.toml
+├── .forgeguard/baseline.json  # after `forgeguard baseline create`
 ├── .forgeguard/.gitignore
 ├── AGENTS.md
 ├── CLAUDE.md
@@ -151,6 +167,10 @@ your-project/
 ```
 
 Existing policy and skill files are not overwritten unless `--force` is supplied. Hook installation merges one ForgeGuard entry into existing JSON and preserves unrelated settings. Global installation writes ForgeGuard-owned skills, compact policies, and hook entries for selected agents. `--force` also removes obsolete ForgeGuard-owned role-skill directories without touching unrelated skills.
+
+When a project `.gitignore` already exists, `forgeguard init` appends the generated directories for
+the selected agents (`.codex/`, `.claude/`, `.cursor/`, and/or `.agents/`). It preserves existing
+patterns, avoids duplicate entries, and does not create a root `.gitignore`.
 
 ## Agent support
 
@@ -241,6 +261,7 @@ When run in a terminal without an explicit mode, `forgeguard mode` opens the sam
 | `forgeguard mode` | Check or change project/global operating mode. |
 | `forgeguard gate` | Run static rules and configured quality commands. |
 | `forgeguard review` | Scan Git-changed files without running commands. |
+| `forgeguard baseline create` | Record current static findings so gates report only new findings. |
 | `forgeguard hook stop` | Internal token-efficient lifecycle adapter for supported agents. |
 
 ## Agent contract

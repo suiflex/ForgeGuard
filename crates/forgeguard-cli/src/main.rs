@@ -9,12 +9,12 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use forgeguard_core::{
     config::{ForgeGuardConfig, CONFIG_FILE},
-    detect_project, evaluate_stop_hook,
+    create_baseline, detect_project, evaluate_stop_hook,
     git::changed_files,
     initialize_global, initialize_project, render_hook_decision,
     report::{render_detection, render_doctor, render_gate, render_gate_compact},
     run_doctor, run_gate, AgentTarget, GateOptions, GateReport, GateStatus, GuardMode, HookAgent,
-    HookDecision, InitOptions,
+    HookDecision, InitOptions, BASELINE_FILE,
 };
 
 #[derive(Debug, Parser)]
@@ -83,6 +83,11 @@ enum Commands {
         #[arg(long, value_enum, default_value = "full", conflicts_with = "json")]
         output: OutputArg,
     },
+    /// Record current static findings so gates report only new findings.
+    Baseline {
+        #[command(subcommand)]
+        command: BaselineCommands,
+    },
     /// Run lifecycle adapters used by supported AI coding agents.
     Hook {
         #[command(subcommand)]
@@ -123,6 +128,17 @@ enum HookCommands {
     Stop {
         #[arg(long, value_enum)]
         agent: HookAgentArg,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum BaselineCommands {
+    /// Write current static findings to .forgeguard/baseline.json.
+    Create {
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -278,6 +294,29 @@ fn execute() -> Result<ExitCode> {
             )?;
             render_gate_output(&report, json, output)?;
             Ok(exit_code_for_status(report.status))
+        }
+        Commands::Baseline {
+            command: BaselineCommands::Create { force, json },
+        } => {
+            let config = ForgeGuardConfig::load(&root).context(
+                "ForgeGuard is not initialized; run `forgeguard init` in the repository first",
+            )?;
+            let baseline = create_baseline(&root, &config.scan, force)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "path": BASELINE_FILE,
+                        "findings": baseline.total_findings(),
+                    })
+                );
+            } else {
+                println!(
+                    "ForgeGuard baseline created: {} finding(s) at {BASELINE_FILE}",
+                    baseline.total_findings()
+                );
+            }
+            Ok(ExitCode::SUCCESS)
         }
         Commands::Hook {
             command: HookCommands::Stop { agent },
@@ -576,7 +615,9 @@ fn render_file_changes(written: &[String], skipped: &[String]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{agents_from_names, AgentTarget};
+    use clap::Parser;
+
+    use super::{agents_from_names, AgentTarget, BaselineCommands, Cli, Commands};
 
     #[test]
     fn maps_checked_names_in_menu_order() {
@@ -597,5 +638,21 @@ mod tests {
             agents_from_names(&["claude", "bogus"]),
             vec![AgentTarget::Claude]
         );
+    }
+
+    #[test]
+    fn parses_forced_json_baseline_creation() {
+        let cli = Cli::try_parse_from(["forgeguard", "baseline", "create", "--force", "--json"])
+            .expect("parse baseline command");
+
+        assert!(matches!(
+            cli.command,
+            Commands::Baseline {
+                command: BaselineCommands::Create {
+                    force: true,
+                    json: true
+                }
+            }
+        ));
     }
 }

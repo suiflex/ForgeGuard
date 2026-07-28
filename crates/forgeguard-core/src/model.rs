@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     Info,
@@ -65,6 +65,7 @@ pub struct GateSummary {
     pub errors: usize,
     pub warnings: usize,
     pub info: usize,
+    pub findings_baselined: usize,
     pub checks_passed: usize,
     pub checks_failed: usize,
 }

@@ -58,6 +58,10 @@ fn installs_configuration_for_all_supported_agents() {
         .join(".agents/skills/forgeguard-engineering/references/mobile.md")
         .exists());
     assert!(!directory.path().join(".gitignore").exists());
+    assert!(!directory
+        .path()
+        .join(".agents/skills/forgeguard-engineering/references/clean-code.md")
+        .exists());
     let algorithm_policy = fs::read_to_string(
         directory
             .path()
@@ -214,6 +218,50 @@ fn force_removes_only_legacy_forgeguard_skills() {
         .path()
         .join(".agents/skills/forgeguard-engineering/SKILL.md")
         .exists());
+}
+
+#[test]
+fn force_removes_obsolete_skill_reference() {
+    let directory = tempdir().expect("temp directory");
+    let obsolete = directory
+        .path()
+        .join(".agents/skills/forgeguard-engineering/references/clean-code.md");
+    fs::create_dir_all(obsolete.parent().expect("obsolete reference parent"))
+        .expect("create obsolete reference parent");
+    fs::write(&obsolete, "legacy reference").expect("write obsolete reference");
+
+    initialize_project(
+        directory.path(),
+        &InitOptions {
+            force: true,
+            agents: vec![AgentTarget::Codex],
+        },
+    )
+    .expect("initialize project");
+
+    assert!(!obsolete.exists());
+}
+
+#[test]
+fn non_force_preserves_obsolete_skill_reference() {
+    let directory = tempdir().expect("temp directory");
+    let obsolete = directory
+        .path()
+        .join(".agents/skills/forgeguard-engineering/references/clean-code.md");
+    fs::create_dir_all(obsolete.parent().expect("obsolete reference parent"))
+        .expect("create obsolete reference parent");
+    fs::write(&obsolete, "legacy reference").expect("write obsolete reference");
+
+    initialize_project(
+        directory.path(),
+        &InitOptions {
+            force: false,
+            agents: vec![AgentTarget::Codex],
+        },
+    )
+    .expect("initialize project");
+
+    assert!(obsolete.exists());
 }
 
 #[test]

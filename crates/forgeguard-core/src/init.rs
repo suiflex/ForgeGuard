@@ -182,6 +182,7 @@ pub fn initialize_project(root: &Path, options: &InitOptions) -> Result<InitRepo
         &mut files_written,
         &mut files_skipped,
     )?;
+    ignore_project_agent_directories(root, &options.agents, &mut files_written)?;
 
     Ok(InitReport {
         detection,
@@ -198,8 +199,20 @@ fn install_agents(
     written: &mut Vec<String>,
     skipped: &mut Vec<String>,
 ) -> Result<()> {
-    // Flatten `All` into the concrete list and dedup so `[Claude, All]` never
-    // installs Claude twice.
+    for target in expand_agent_targets(requested) {
+        match target {
+            AgentTarget::Codex => install_codex(root, scope, force, written, skipped)?,
+            AgentTarget::Claude => install_claude(root, scope, force, written, skipped)?,
+            AgentTarget::Cursor => install_cursor(root, scope, force, written, skipped)?,
+            AgentTarget::OpenCode => install_opencode(root, scope, force, written, skipped)?,
+            AgentTarget::Antigravity => install_antigravity(root, scope, force, written, skipped)?,
+            AgentTarget::All => unreachable!("all is expanded before installation"),
+        }
+    }
+    Ok(())
+}
+
+fn expand_agent_targets(requested: &[AgentTarget]) -> Vec<AgentTarget> {
     // ponytail: O(n²) contains-check, but n <= 5 agents; a set is not worth it.
     let mut targets: Vec<AgentTarget> = Vec::new();
     let push = |target: AgentTarget, targets: &mut Vec<AgentTarget>| {
@@ -209,6 +222,7 @@ fn install_agents(
     };
     for target in requested {
         if *target == AgentTarget::All {
+            // forgeguard: allow FG-ALG-001 -- at most five requested agents expand across five targets
             for expanded in ALL_AGENT_TARGETS {
                 push(*expanded, &mut targets);
             }
@@ -216,15 +230,68 @@ fn install_agents(
             push(*target, &mut targets);
         }
     }
-    for target in &targets {
-        match target {
-            AgentTarget::Codex => install_codex(root, scope, force, written, skipped)?,
-            AgentTarget::Claude => install_claude(root, scope, force, written, skipped)?,
-            AgentTarget::Cursor => install_cursor(root, scope, force, written, skipped)?,
-            AgentTarget::OpenCode => install_opencode(root, scope, force, written, skipped)?,
-            AgentTarget::Antigravity => install_antigravity(root, scope, force, written, skipped)?,
-            AgentTarget::All => unreachable!("all is expanded before installation"),
+    targets
+}
+
+fn ignore_project_agent_directories(
+    root: &Path,
+    requested: &[AgentTarget],
+    written: &mut Vec<String>,
+) -> Result<()> {
+    let path = root.join(".gitignore");
+    if !path.is_file() {
+        return Ok(());
+    }
+
+    let targets = expand_agent_targets(requested);
+    let mut entries = Vec::new();
+    if targets.contains(&AgentTarget::Codex) {
+        entries.push(".codex/");
+    }
+    if targets.contains(&AgentTarget::Claude) {
+        entries.push(".claude/");
+    }
+    if targets.contains(&AgentTarget::Cursor) {
+        entries.push(".cursor/");
+    }
+    if targets.iter().any(|target| {
+        matches!(
+            target,
+            AgentTarget::Codex
+                | AgentTarget::Cursor
+                | AgentTarget::OpenCode
+                | AgentTarget::Antigravity
+        )
+    }) {
+        entries.push(".agents/");
+    }
+
+    let mut content =
+        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    let newline = if content.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let mut changed = false;
+    for entry in entries {
+        let expected = entry.trim_end_matches('/');
+        if content
+            .lines()
+            .any(|line| line.trim().trim_matches('/') == expected)
+        {
+            continue;
         }
+        if !content.is_empty() && !content.ends_with('\n') {
+            content.push_str(newline);
+        }
+        content.push_str(entry);
+        content.push_str(newline);
+        changed = true;
+    }
+    if changed {
+        fs::write(&path, content).with_context(|| format!("failed to write {}", path.display()))?;
+        record_path(root, &path, written);
     }
     Ok(())
 }

@@ -46,4 +46,9 @@ A reviewed heuristic can be suppressed on its line or the preceding line with a 
 // forgeguard: allow FG-ALG-001 -- bounded inner loop; maximum 8 items
 ```
 
-Error-level findings and command failures cannot be suppressed.
+Error-level findings and command failures cannot be suppressed inline.
+
+For an existing repository, `forgeguard baseline create` records current static findings in
+`.forgeguard/baseline.json`. Later gates hide matching existing findings while still reporting
+additional occurrences, changed evidence, and all command failures. Commit the baseline so local
+and CI gates enforce the same boundary.

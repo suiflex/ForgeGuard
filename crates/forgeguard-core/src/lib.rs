@@ -1,3 +1,4 @@
+pub mod baseline;
 pub mod config;
 pub mod detector;
 pub mod doctor;
@@ -12,6 +13,7 @@ pub mod runner;
 pub mod scanner;
 pub mod update;
 
+pub use baseline::{create_baseline, Baseline, BaselineEntry, BASELINE_FILE};
 pub use config::{CommandConfig, ForgeGuardConfig, GuardMode};
 pub use detector::{detect_project, ProjectDetection};
 pub use doctor::{run_doctor, DoctorReport};

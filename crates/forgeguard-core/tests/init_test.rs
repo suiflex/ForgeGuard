@@ -57,6 +57,7 @@ fn installs_configuration_for_all_supported_agents() {
         .path()
         .join(".agents/skills/forgeguard-engineering/references/mobile.md")
         .exists());
+    assert!(!directory.path().join(".gitignore").exists());
     let algorithm_policy = fs::read_to_string(
         directory
             .path()
@@ -68,6 +69,45 @@ fn installs_configuration_for_all_supported_agents() {
     let doctor = forgeguard_core::run_doctor(directory.path(), None).expect("run doctor");
     assert!(doctor.hooks.iter().all(|hook| hook.configured));
     assert!(!report.files_written.is_empty());
+}
+
+#[test]
+fn project_init_appends_installed_agent_directories_to_existing_gitignore() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(directory.path().join(".gitignore"), "target/\n/.codex/\n").expect("write gitignore");
+    let options = InitOptions {
+        force: false,
+        agents: vec![AgentTarget::All],
+    };
+
+    let report = initialize_project(directory.path(), &options).expect("first initialization");
+    initialize_project(directory.path(), &options).expect("second initialization");
+
+    assert_eq!(
+        fs::read_to_string(directory.path().join(".gitignore")).expect("read gitignore"),
+        "target/\n/.codex/\n.claude/\n.cursor/\n.agents/\n"
+    );
+    assert!(report.files_written.contains(&".gitignore".to_owned()));
+}
+
+#[test]
+fn project_init_ignores_only_directories_for_selected_agents() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(directory.path().join(".gitignore"), "target/\r\n").expect("write gitignore");
+
+    initialize_project(
+        directory.path(),
+        &InitOptions {
+            force: false,
+            agents: vec![AgentTarget::Claude],
+        },
+    )
+    .expect("initialize Claude");
+
+    assert_eq!(
+        fs::read_to_string(directory.path().join(".gitignore")).expect("read gitignore"),
+        "target/\r\n.claude/\r\n"
+    );
 }
 
 #[test]

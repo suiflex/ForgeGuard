@@ -64,8 +64,8 @@ fn installs_configuration_for_all_supported_agents() {
             .join(".agents/skills/forgeguard-engineering/references/algorithms.md"),
     )
     .expect("read algorithm policy");
-    assert!(algorithm_policy.contains("Performance-critical review output"));
-    assert!(algorithm_policy.contains("Correctness → Security → Data Integrity"));
+    assert!(algorithm_policy.contains("Bound cache size, lifetime, and concurrent fan-out"));
+    assert!(algorithm_policy.contains("actual bottleneck before optimizing"));
     let doctor = forgeguard_core::run_doctor(directory.path(), None).expect("run doctor");
     assert!(doctor.hooks.iter().all(|hook| hook.configured));
     assert!(!report.files_written.is_empty());

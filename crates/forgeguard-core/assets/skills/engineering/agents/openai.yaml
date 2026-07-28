@@ -1,4 +1,4 @@
 interface:
   display_name: "ForgeGuard Engineering"
   short_description: "Inspect, test, and verify code changes"
-  default_prompt: "Use $forgeguard-engineering to inspect, design, implement, test, review, and verify this code change."
+  default_prompt: "Use $forgeguard-engineering for this code change."

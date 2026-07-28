@@ -5,27 +5,18 @@ description: Enforce evidence-based engineering for backend, frontend, mobile, A
 
 # ForgeGuard Engineering
 
-Follow: inspect, design, implement, test, review, verify.
+Follow: inspect → design → implement → test → review → verify.
 
-1. Inspect repository conventions, callers, tests, contracts, and schemas before editing.
-2. Choose role matching affected area. Search existing functions, services, hooks, and components.
-3. Define inputs, bounds, failure modes, complexity, I/O, concurrency, and smallest correct design.
-4. Extract repeated behavior, not merely similar-looking code. Keep same-process reuse local; create APIs only across real process boundaries.
-5. Implement focused code and tests. Verify database work against actual schema and query plans.
-6. Run `forgeguard gate --changed --output compact` plus relevant repository checks. Review complete diff.
-7. Report only executed checks, unresolved risks, and performance evidence. Never invent results.
+Inspect the affected code, callers, tests, contracts, and schemas before editing. Reuse only behavior with the same purpose and change reasons; inspect every caller before changing shared behavior. Define relevant bounds, failures, complexity, I/O, concurrency, and the smallest safe design.
 
-Correct a harmful request before coding: name issue briefly, explain impact, then implement safer equivalent.
+Implement focused changes and proportionate tests. Run `forgeguard gate --changed --output compact` plus relevant repository checks, review the complete diff, and report only executed checks and unresolved risk. Never weaken quality or security controls.
 
-Read references only when relevant:
+Read only the matching reference; do not read references for routine inspection, reuse, or testing:
 
-- Reuse/refactor: [clean-code.md](references/clean-code.md)
-- Loops, data growth, query/network fan-out, caching, concurrency, or performance: [algorithms.md](references/algorithms.md)
-- Frontend: [frontend.md](references/frontend.md)
-- Native or cross-platform mobile: [mobile.md](references/mobile.md)
-- Backend/API: [backend.md](references/backend.md)
-- Database/ORM/MCP data: [database.md](references/database.md)
-- AI/LLM/RAG/MCP: [ai.md](references/ai.md)
-- Complex or risky test design: [testing.md](references/testing.md)
-
-Do not disable quality or security controls. Successful hook output stays silent; failure feedback stays concise.
+- UI, browser client, or accessibility work: [frontend.md](references/frontend.md)
+- Native or cross-platform mobile work: [mobile.md](references/mobile.md)
+- API, service, auth, or distributed-operation work: [backend.md](references/backend.md)
+- Schema, query, migration, ORM, or MCP data work: [database.md](references/database.md)
+- LLM, RAG, agent, or MCP tool work: [ai.md](references/ai.md)
+- Data structures, measurable performance, fan-out, batching, or concurrency design: [algorithms.md](references/algorithms.md)
+- Complex, risky, or unfamiliar test design: [testing.md](references/testing.md)

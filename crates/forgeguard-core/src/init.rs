@@ -24,10 +24,6 @@ const SKILL_ASSETS: &[(&str, &str)] = &[
         include_str!("../assets/skills/engineering/SKILL.md"),
     ),
     (
-        "references/clean-code.md",
-        include_str!("../assets/skills/engineering/references/clean-code.md"),
-    ),
-    (
         "references/frontend.md",
         include_str!("../assets/skills/engineering/references/frontend.md"),
     ),
@@ -60,6 +56,8 @@ const SKILL_ASSETS: &[(&str, &str)] = &[
         include_str!("../assets/skills/engineering/agents/openai.yaml"),
     ),
 ];
+
+const OBSOLETE_SKILL_ASSETS: &[&str] = &["references/clean-code.md"];
 
 pub(crate) const LEGACY_SKILL_NAMES: &[&str] = &[
     "algorithm-engineering",
@@ -450,6 +448,29 @@ fn install_skill(
     for (relative, content) in SKILL_ASSETS {
         let path = root.join(directory).join(relative);
         write_file(root, &path, content, force, written, skipped)?;
+    }
+    if force {
+        remove_obsolete_skill_assets(root, directory)?;
+    }
+    Ok(())
+}
+
+fn remove_obsolete_skill_assets(root: &Path, directory: &str) -> Result<()> {
+    for relative in OBSOLETE_SKILL_ASSETS {
+        let path = root.join(directory).join(relative);
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if metadata.is_file() || metadata.file_type().is_symlink() {
+            fs::remove_file(&path).with_context(|| {
+                format!("failed to remove obsolete skill asset {}", path.display())
+            })?;
+        } else {
+            bail!(
+                "expected obsolete skill asset to be a file: {}",
+                path.display()
+            );
+        }
     }
     Ok(())
 }

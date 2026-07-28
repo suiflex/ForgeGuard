@@ -218,6 +218,7 @@ fn is_supported_source(path: &Path) -> bool {
                 | "sh"
                 | "bash"
                 | "zsh"
+                | "astro"
                 | "fish"
                 | "lua"
                 | "ex"
@@ -238,42 +239,107 @@ fn is_supported_source(path: &Path) -> bool {
     )
 }
 
+/// A data literal spanning this many source lines is almost always embedded
+/// fixture/mock data that belongs in its own file rather than mixed into logic.
+const MAX_DATA_LITERAL_LINES: usize = 80;
+/// Or this many top-level elements/entries, for dense single-line-ish dumps.
+const MAX_DATA_LITERAL_ELEMENTS: usize = 50;
+
 struct Analyzer {
     select_all: Regex,
+    script_block: Regex,
+    ts_lang: Regex,
 }
 
 impl Analyzer {
     fn new() -> Result<Self> {
         Ok(Self {
             select_all: Regex::new(r"(?xi)\bSELECT\s+\*\s+FROM\b")?,
+            script_block: Regex::new(r"(?is)<script\b[^>]*>(.*?)</script>")?,
+            ts_lang: Regex::new(r#"(?i)lang\s*=\s*["']?ts"#)?,
         })
+    }
+
+    /// Svelte/Vue/Astro single-file components keep their imperative logic in
+    /// `<script>` blocks (and Astro's leading `---` frontmatter). Mask every
+    /// other byte with blanks — preserving line and column positions — and scan
+    /// the result as JavaScript or TypeScript so all existing rules apply to the
+    /// real logic instead of skipping the file.
+    fn extract_component_script(
+        &self,
+        path: &Path,
+        source: &str,
+    ) -> Option<(LanguageProfile, String)> {
+        let ext = path.extension().and_then(|value| value.to_str())?;
+        if !matches!(ext, "svelte" | "vue" | "astro") {
+            return None;
+        }
+        let mut regions: Vec<(usize, usize)> = Vec::new();
+        let mut typescript = ext == "astro";
+        if ext == "astro" {
+            if let Some(rest) = source.strip_prefix("---") {
+                if let Some(end) = rest.find("\n---") {
+                    regions.push((3, 3 + end));
+                }
+            }
+        }
+        for caps in self.script_block.captures_iter(source) {
+            let tag = caps.get(0)?;
+            let body = caps.get(1)?;
+            if self.ts_lang.is_match(&source[tag.start()..body.start()]) {
+                typescript = true;
+            }
+            regions.push((body.start(), body.end()));
+        }
+        if regions.is_empty() {
+            return None;
+        }
+        let profile = if typescript {
+            LanguageProfile::TypeScript
+        } else {
+            LanguageProfile::JavaScript
+        };
+        Some((profile, mask_outside(source, &regions)))
     }
 
     fn scan_file(&mut self, root: &Path, path: &Path, source: &str, findings: &mut Vec<Finding>) {
         let relative = path.strip_prefix(root).unwrap_or(path).to_path_buf();
-        let Some(profile) = LanguageProfile::from_path(path) else {
-            if path.extension().and_then(|value| value.to_str()) == Some("sql") {
-                self.scan_sql(&relative, source, findings);
-            }
-            return;
+        let component = self.extract_component_script(path, source);
+        let (profile, source, emit_parse_errors) = match component.as_ref() {
+            Some((profile, masked)) => (*profile, masked.as_str(), false),
+            None => match LanguageProfile::from_path(path) {
+                Some(profile) => (profile, source, true),
+                None => {
+                    if path.extension().and_then(|value| value.to_str()) == Some("sql") {
+                        self.scan_sql(&relative, source, findings);
+                    }
+                    return;
+                }
+            },
         };
         let mut parser = Parser::new();
         if parser.set_language(&profile.language()).is_err() {
-            findings.push(parse_finding(
-                &relative,
-                "language grammar could not be loaded",
-            ));
+            if emit_parse_errors {
+                findings.push(parse_finding(
+                    &relative,
+                    "language grammar could not be loaded",
+                ));
+            }
             return;
         }
         let Some(tree) = parser.parse(source, None) else {
-            findings.push(parse_finding(&relative, "source could not be parsed"));
+            if emit_parse_errors {
+                findings.push(parse_finding(&relative, "source could not be parsed"));
+            }
             return;
         };
         if tree.root_node().has_error() {
-            findings.push(parse_finding(
-                &relative,
-                "source contains syntax errors; structural checks skipped",
-            ));
+            if emit_parse_errors {
+                findings.push(parse_finding(
+                    &relative,
+                    "source contains syntax errors; structural checks skipped",
+                ));
+            }
             return;
         }
 
@@ -376,6 +442,30 @@ impl Analyzer {
                 }
             }
 
+            if profile.is_data_literal(node.kind())
+                && !node
+                    .parent()
+                    .is_some_and(|parent| profile.is_data_literal(parent.kind()))
+            {
+                let span = node
+                    .end_position()
+                    .row
+                    .saturating_sub(node.start_position().row);
+                if span >= MAX_DATA_LITERAL_LINES
+                    || node.named_child_count() >= MAX_DATA_LITERAL_ELEMENTS
+                {
+                    findings.push(finding_for_node(
+                        "FG-ARCH-001",
+                        "Large inline data literal",
+                        Severity::Warning,
+                        &relative,
+                        node,
+                        source,
+                        "Move large fixed datasets or mock data into a dedicated data/fixture file, JSON, or loader; keep modules and components focused on logic.",
+                    ));
+                }
+            }
+
             let child_loop_depth = loop_depth + usize::from(starts_loop);
             stack.extend(
                 (0..node.named_child_count())
@@ -426,6 +516,14 @@ enum LanguageProfile {
     Swift,
     Dart,
     Bash,
+    Zig,
+    Lua,
+    Scala,
+    Solidity,
+    Elixir,
+    Erlang,
+    RLang,
+    Hcl,
 }
 
 impl LanguageProfile {
@@ -447,6 +545,14 @@ impl LanguageProfile {
             "swift" => Some(Self::Swift),
             "dart" => Some(Self::Dart),
             "sh" | "bash" | "zsh" => Some(Self::Bash),
+            "zig" => Some(Self::Zig),
+            "lua" => Some(Self::Lua),
+            "scala" | "sc" => Some(Self::Scala),
+            "sol" => Some(Self::Solidity),
+            "ex" | "exs" => Some(Self::Elixir),
+            "erl" | "hrl" => Some(Self::Erlang),
+            "r" => Some(Self::RLang),
+            "tf" | "hcl" => Some(Self::Hcl),
             _ => None,
         }
     }
@@ -469,6 +575,14 @@ impl LanguageProfile {
             Self::Swift => tree_sitter_swift::LANGUAGE.into(),
             Self::Dart => tree_sitter_dart::LANGUAGE.into(),
             Self::Bash => tree_sitter_bash::LANGUAGE.into(),
+            Self::Zig => tree_sitter_zig::LANGUAGE.into(),
+            Self::Lua => tree_sitter_lua::LANGUAGE.into(),
+            Self::Scala => tree_sitter_scala::LANGUAGE.into(),
+            Self::Solidity => tree_sitter_solidity::LANGUAGE.into(),
+            Self::Elixir => tree_sitter_elixir::LANGUAGE.into(),
+            Self::Erlang => tree_sitter_erlang::LANGUAGE.into(),
+            Self::RLang => tree_sitter_r::LANGUAGE.into(),
+            Self::Hcl => tree_sitter_hcl::LANGUAGE.into(),
         }
     }
 
@@ -520,6 +634,23 @@ impl LanguageProfile {
                 kind,
                 "for_statement" | "c_style_for_statement" | "while_statement" | "until_statement"
             ),
+            Self::Zig => matches!(kind, "for_statement" | "while_statement"),
+            Self::Lua => matches!(
+                kind,
+                "for_statement"
+                    | "for_numeric_statement"
+                    | "for_generic_statement"
+                    | "while_statement"
+                    | "repeat_statement"
+            ),
+            Self::Scala => matches!(kind, "for_expression" | "while_expression"),
+            Self::Solidity => matches!(
+                kind,
+                "for_statement" | "while_statement" | "do_while_statement"
+            ),
+            Self::RLang => matches!(kind, "for" | "while_statement" | "for_statement" | "while"),
+            // Functional/declarative grammars: no imperative loop nodes.
+            Self::Elixir | Self::Erlang | Self::Hcl => false,
         }
     }
 
@@ -538,6 +669,14 @@ impl LanguageProfile {
             Self::Swift => method == "firstIndex",
             Self::Dart => matches!(method, "firstWhere" | "indexOf"),
             Self::Go | Self::C | Self::Cpp | Self::Bash => false,
+            Self::Zig
+            | Self::Lua
+            | Self::Scala
+            | Self::Solidity
+            | Self::Elixir
+            | Self::Erlang
+            | Self::RLang
+            | Self::Hcl => false,
         }
     }
 
@@ -557,8 +696,46 @@ impl LanguageProfile {
             Self::Swift => matches!(terminal_name(callee), "map" | "filter" | "forEach"),
             Self::Dart => matches!(terminal_name(callee), "map" | "where" | "forEach"),
             Self::Go | Self::Python | Self::C | Self::Bash => false,
+            Self::Zig
+            | Self::Lua
+            | Self::Scala
+            | Self::Solidity
+            | Self::Elixir
+            | Self::Erlang
+            | Self::RLang
+            | Self::Hcl => false,
         }
     }
+
+    /// Array/object/collection literal kinds that commonly hold embedded
+    /// fixture or mock datasets. Scoped to the languages where huge inline data
+    /// dumps actually happen; other languages return false.
+    fn is_data_literal(self, kind: &str) -> bool {
+        match self {
+            Self::JavaScript | Self::TypeScript | Self::Tsx => {
+                matches!(kind, "array" | "object")
+            }
+            Self::Python => matches!(kind, "list" | "dictionary" | "set" | "tuple"),
+            _ => false,
+        }
+    }
+}
+
+/// Blank every byte outside `regions` (non-newline → space, newline kept) so
+/// the returned source parses as the embedded language while row and column
+/// positions still map back to the original file.
+fn mask_outside(source: &str, regions: &[(usize, usize)]) -> String {
+    let bytes = source.as_bytes();
+    let mut out: Vec<u8> = bytes
+        .iter()
+        .map(|&byte| if byte == b'\n' { b'\n' } else { b' ' })
+        .collect();
+    for &(start, end) in regions {
+        if let (Some(dst), Some(src)) = (out.get_mut(start..end), bytes.get(start..end)) {
+            dst.copy_from_slice(src);
+        }
+    }
+    String::from_utf8(out).unwrap_or_default()
 }
 
 fn call_name<'a>(node: Node<'a>, source: &'a str) -> Option<&'a str> {

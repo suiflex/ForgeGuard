@@ -33,7 +33,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Install ForgeGuard skills globally or initialize a repository.
+    /// Install or refresh ForgeGuard for a repo or globally (--force to refresh after an upgrade).
     Init {
         /// Overwrite ForgeGuard-owned policy and skill files with the bundled
         /// versions and prune obsolete role-skill directories. Also regenerates
@@ -97,7 +97,7 @@ enum Commands {
         #[command(subcommand)]
         command: HookCommands,
     },
-    /// Check for a newer ForgeGuard release (optional; never required).
+    /// Check for a newer release (checks only; installs nothing).
     ///
     /// Only checks and prints a notice; it installs nothing. To upgrade, re-run
     /// the installer, then `forgeguard init --force` to refresh skills and

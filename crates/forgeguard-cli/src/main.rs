@@ -35,6 +35,10 @@ struct Cli {
 enum Commands {
     /// Install ForgeGuard skills globally or initialize a repository.
     Init {
+        /// Overwrite ForgeGuard-owned policy and skill files with the bundled
+        /// versions and prune obsolete role-skill directories. Also regenerates
+        /// .forgeguard/config.toml from detection defaults, resetting custom
+        /// commands and mode. Use to refresh an existing install after an upgrade.
         #[arg(long)]
         force: bool,
         /// Install rules, skills, and hooks for supported agents under the user directory.
@@ -94,6 +98,10 @@ enum Commands {
         command: HookCommands,
     },
     /// Check for a newer ForgeGuard release (optional; never required).
+    ///
+    /// Only checks and prints a notice; it installs nothing. To upgrade, re-run
+    /// the installer, then `forgeguard init --force` to refresh skills and
+    /// policies. Use `forgeguard --version` to see the installed version.
     Update,
 }
 

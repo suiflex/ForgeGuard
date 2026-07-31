@@ -135,6 +135,12 @@ cargo install --path crates/forgeguard-cli
 Check the installed version at any time:
 
 ```bash
+forgeguard --version
+```
+
+Check whether a newer release exists (checks only; installs nothing):
+
+```bash
 forgeguard update
 ```
 

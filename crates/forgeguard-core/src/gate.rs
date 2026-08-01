@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use crate::{
     baseline::Baseline,
-    config::{ForgeGuardConfig, GuardMode},
+    config::ForgeGuardConfig,
     model::{GateReport, GateStatus, GateSummary, Severity},
     runner::run_checks,
     scanner::{scan_project, ScanOptions},
@@ -31,6 +31,7 @@ pub fn run_gate(
     findings.dedup_by(|left, right| {
         left.rule_id == right.rule_id && left.path == right.path && left.line == right.line
     });
+    findings.retain_mut(|finding| config.apply_rule(&finding.rule_id, &mut finding.severity));
     let findings_baselined = match Baseline::load(root)? {
         Some(baseline) => baseline.filter(&mut findings),
         None => 0,
@@ -53,11 +54,15 @@ pub fn run_gate(
         .iter()
         .filter(|finding| finding.severity == Severity::Info)
         .count();
+    for finding in &mut findings {
+        finding.blocking = config.blocks_finding(&finding.rule_id, finding.severity);
+    }
+    let blocking_findings = findings.iter().filter(|finding| finding.blocking).count();
     let checks_passed = checks.iter().filter(|check| check.success).count();
     let checks_failed = checks.iter().filter(|check| !check.success).count();
     let required_check_failed = checks.iter().any(|check| check.required && !check.success);
 
-    let status = if required_check_failed || config.mode == GuardMode::Strict && errors > 0 {
+    let status = if required_check_failed || blocking_findings > 0 {
         GateStatus::Blocked
     } else if errors + warnings + info + checks_failed > 0 {
         GateStatus::Warning
@@ -73,6 +78,7 @@ pub fn run_gate(
             errors,
             warnings,
             info,
+            blocking_findings,
             findings_baselined,
             checks_passed,
             checks_failed,

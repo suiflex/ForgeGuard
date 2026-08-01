@@ -37,7 +37,7 @@ export async function enrich(users, roles, db) {
         .any(|finding| finding.rule_id == "FG-ALG-002"));
     assert!(findings
         .iter()
-        .any(|finding| { finding.rule_id == "FG-DB-001" && finding.severity == Severity::Error }));
+        .any(|finding| { finding.rule_id == "FG-DB-002" && finding.severity == Severity::Info }));
 }
 
 #[test]
@@ -118,7 +118,7 @@ async def load_profiles(users, db):
         .any(|finding| finding.rule_id == "FG-ALG-001"));
     assert!(findings
         .iter()
-        .any(|finding| finding.rule_id == "FG-DB-001"));
+        .any(|finding| finding.rule_id == "FG-DB-002"));
 }
 
 #[test]
@@ -194,6 +194,8 @@ fn detects_chained_orm_query_inside_loop() {
     fs::write(
         directory.path().join("repository.ts"),
         r#"
+import { PrismaClient } from "@prisma/client";
+const prisma = new PrismaClient();
 for (const account of accounts) {
   await prisma.user.findMany({ where: { accountId: account.id } });
 }
@@ -278,7 +280,7 @@ fn detects_database_access_in_rust_go_and_python_loops() {
     .expect("scan project");
 
     for path in ["repository.rs", "repository.go", "repository.py"] {
-        assert!(findings.iter().any(|finding| finding.rule_id == "FG-DB-001"
+        assert!(findings.iter().any(|finding| finding.rule_id == "FG-DB-002"
             && finding.path.as_path() == std::path::Path::new(path)));
     }
 }
@@ -559,7 +561,7 @@ fn detects_database_calls_in_common_object_oriented_languages() {
     for (name, _) in sources {
         assert!(
             findings.iter().any(|finding| {
-                finding.rule_id == "FG-DB-001"
+                finding.rule_id == "FG-DB-002"
                     && finding.path.as_path() == std::path::Path::new(name)
             }),
             "missing database-in-loop finding for {name}"
@@ -618,6 +620,8 @@ fn reasoned_inline_suppression_only_hides_heuristics() {
     fs::write(
         directory.path().join("service.ts"),
         r#"
+import { PrismaClient } from "@prisma/client";
+const db = new PrismaClient();
 for (const user of users) {
   // forgeguard: allow FG-ALG-002 -- roles has a documented maximum of 4
   const role = roles.find((candidate) => candidate.id === user.roleId);
@@ -676,7 +680,7 @@ fn scans_svelte_component_script_with_correct_line_numbers() {
 
     let db = findings
         .iter()
-        .find(|finding| finding.rule_id == "FG-DB-001" && finding.severity == Severity::Error)
+        .find(|finding| finding.rule_id == "FG-DB-002" && finding.severity == Severity::Info)
         .expect("db-in-loop flagged inside svelte <script>");
     // The db.query call sits on line 6 of the original file; masking must
     // preserve line numbers so the finding points back at the real source.
@@ -764,4 +768,116 @@ fn flags_large_inline_data_literal_but_not_small_one() {
         .iter()
         .any(|finding| finding.rule_id == "FG-ARCH-001"
             && finding.path.to_string_lossy().ends_with("small.ts")));
+}
+
+#[test]
+fn semantic_packs_propagate_database_and_network_wrappers() {
+    let directory = tempdir().expect("temp directory");
+    let sources = [
+        (
+            "service.ts",
+            r#"import { PrismaClient } from "@prisma/client";
+const prisma = new PrismaClient();
+async function loadUser(id) { return prisma.user.findMany({ where: { id } }); }
+for (const id of ids) { await loadUser(id); }
+"#,
+            "FG-DB-001",
+        ),
+        (
+            "service.py",
+            "import requests as http\ndef fetch_user(url):\n    return http.get(url)\nfor url in urls:\n    fetch_user(url)\n",
+            "FG-NET-001",
+        ),
+        (
+            "service.rs",
+            "use sqlx;\nfn load_user(id: i64) { sqlx::query(\"SELECT id FROM users\"); }\nfn run(ids: &[i64]) { for id in ids { load_user(*id); } }\n",
+            "FG-DB-001",
+        ),
+        (
+            "service.go",
+            "package service\nimport \"net/http\"\nfunc fetchUser(url string) { http.Get(url) }\nfunc run(urls []string) { for _, url := range urls { fetchUser(url) } }\n",
+            "FG-NET-001",
+        ),
+    ];
+    for (name, source, _) in sources {
+        fs::write(directory.path().join(name), source).expect("write semantic source");
+    }
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    for (name, _, rule_id) in sources {
+        assert!(
+            findings.iter().any(|finding| {
+                finding.rule_id == rule_id && finding.path.as_path() == std::path::Path::new(name)
+            }),
+            "missing semantic finding {rule_id} for {name}"
+        );
+    }
+}
+
+#[test]
+fn receiver_name_collision_is_only_heuristic_evidence() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("memory.ts"),
+        r#"import fakeAxios from "not-axios";
+const local = "axios";
+for (const id of ids) { repository.findMany(id); client.get(id); fakeAxios.get(id); local.get(id); }
+"#,
+    )
+    .expect("write source");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    assert!(!findings
+        .iter()
+        .any(|finding| { matches!(finding.rule_id.as_str(), "FG-DB-001" | "FG-NET-001") }));
+    assert!(findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-DB-002"));
+    assert!(findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-NET-002"));
+}
+
+#[test]
+fn changed_scope_resolves_wrapper_from_unchanged_file() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("database.ts"),
+        r#"import { PrismaClient } from "@prisma/client";
+const prisma = new PrismaClient();
+export async function loadUser(id) { return prisma.user.findMany({ where: { id } }); }
+"#,
+    )
+    .expect("write unchanged wrapper");
+    fs::write(
+        directory.path().join("service.ts"),
+        "import { loadUser } from './database';\nfor (const id of ids) { await loadUser(id); }\n",
+    )
+    .expect("write changed caller");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions {
+            paths: Some(vec![std::path::PathBuf::from("service.ts")]),
+        },
+    )
+    .expect("scan changed file");
+
+    assert!(findings.iter().any(|finding| {
+        finding.rule_id == "FG-DB-001"
+            && finding.path.as_path() == std::path::Path::new("service.ts")
+    }));
 }

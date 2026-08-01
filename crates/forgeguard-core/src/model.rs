@@ -10,6 +10,27 @@ pub enum Severity {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum EvidenceConfidence {
+    Deterministic,
+    Semantic,
+    Structural,
+    #[default]
+    Heuristic,
+}
+
+impl EvidenceConfidence {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Deterministic => "deterministic",
+            Self::Semantic => "semantic",
+            Self::Structural => "structural",
+            Self::Heuristic => "heuristic",
+        }
+    }
+}
+
 impl Severity {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -25,6 +46,10 @@ pub struct Finding {
     pub rule_id: String,
     pub title: String,
     pub severity: Severity,
+    #[serde(default)]
+    pub confidence: EvidenceConfidence,
+    #[serde(default)]
+    pub blocking: bool,
     pub path: PathBuf,
     pub line: usize,
     pub evidence: String,
@@ -65,6 +90,7 @@ pub struct GateSummary {
     pub errors: usize,
     pub warnings: usize,
     pub info: usize,
+    pub blocking_findings: usize,
     pub findings_baselined: usize,
     pub checks_passed: usize,
     pub checks_failed: usize,

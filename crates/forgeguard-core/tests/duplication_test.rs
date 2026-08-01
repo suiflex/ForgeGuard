@@ -86,3 +86,62 @@ end
         .iter()
         .any(|finding| finding.rule_id == "FG-DRY-001"));
 }
+
+#[test]
+fn reports_alpha_renamed_functions_but_preserves_literals() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("customer.rs"),
+        r#"pub fn customer_score(users: &[i32]) -> i32 {
+    let mut total = 0;
+    for user in users {
+        let adjusted = user * 2;
+        total += adjusted;
+    }
+    total
+}
+"#,
+    )
+    .expect("write first source");
+    fs::write(
+        directory.path().join("account.rs"),
+        r#"pub fn account_score(accounts: &[i32]) -> i32 {
+    let mut sum = 0;
+    for account in accounts {
+        let weighted = account * 2;
+        sum += weighted;
+    }
+    sum
+}
+"#,
+    )
+    .expect("write renamed source");
+    fs::write(
+        directory.path().join("different.rs"),
+        r#"pub fn different_score(accounts: &[i32]) -> i32 {
+    let mut sum = 0;
+    for account in accounts {
+        let weighted = account * 3;
+        sum += weighted;
+    }
+    sum
+}
+"#,
+    )
+    .expect("write different source");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    assert!(findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-DRY-002"));
+    assert!(!findings.iter().any(|finding| {
+        finding.rule_id == "FG-DRY-002"
+            && finding.path.as_path() == std::path::Path::new("different.rs")
+    }));
+}

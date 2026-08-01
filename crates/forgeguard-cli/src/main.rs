@@ -9,15 +9,15 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use forgeguard_core::{
     config::{ForgeGuardConfig, CONFIG_FILE},
-    create_baseline, detect_project, evaluate_context_hook, evaluate_scope_hook,
+    create_baseline_with_config, detect_project, evaluate_context_hook, evaluate_scope_hook,
     evaluate_stop_hook,
     git::changed_files,
     initialize_global, initialize_project, mark_task_ready_with_confidence, render_context_hook,
     render_hook_decision, render_scope_warning,
-    report::{render_detection, render_doctor, render_gate, render_gate_compact},
+    report::{render_detection, render_doctor, render_gate, render_gate_compact, render_sarif},
     run_doctor, run_gate, start_task_with_contract, task_state, update_task_todos, AgentTarget,
     GateOptions, GateReport, GateStatus, GoalContract, GuardMode, HookAgent, HookDecision,
-    InitOptions, BASELINE_FILE,
+    InitOptions, BASELINE_FILE, LANGUAGE_CAPABILITIES, RULES,
 };
 
 #[derive(Debug, Parser)]
@@ -58,6 +58,11 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Show parser, structural-rule, and semantic-pack coverage.
+    Capabilities {
+        #[arg(long)]
+        json: bool,
+    },
     /// Check or change ForgeGuard mode.
     Mode {
         #[arg(value_enum)]
@@ -66,6 +71,11 @@ enum Commands {
         global: bool,
         #[arg(long)]
         json: bool,
+    },
+    /// Inspect or migrate ForgeGuard configuration.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommands,
     },
     /// Check configuration and required local tools.
     Doctor {
@@ -129,6 +139,7 @@ enum OutputArg {
     Full,
     Compact,
     Quiet,
+    Sarif,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -136,6 +147,15 @@ enum ModeArg {
     Default,
     Lite,
     Strict,
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigCommands {
+    /// Upgrade a version 1 configuration to version 2 without resetting commands.
+    Migrate {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -328,7 +348,50 @@ fn execute() -> Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
+        Commands::Capabilities { json } => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "workflow_support": "all initialized repositories",
+                        "languages": LANGUAGE_CAPABILITIES,
+                        "rules": RULES,
+                    }))?
+                );
+            } else {
+                println!("ForgeGuard capabilities");
+                println!("Workflow support: all initialized repositories");
+                for capability in LANGUAGE_CAPABILITIES {
+                    println!(
+                        "  {}: parser={}, structural={}, semantic={}",
+                        capability.language,
+                        capability.parser,
+                        capability.structural_rules,
+                        capability.semantic_pack
+                    );
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         Commands::Mode { mode, global, json } => execute_mode(&root, mode, global, json),
+        Commands::Config {
+            command: ConfigCommands::Migrate { json },
+        } => {
+            let mut config = ForgeGuardConfig::load(&root)?;
+            let previous = config.migrate_to_v2()?;
+            config.save(&root)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"previous_version": previous, "version": config.version})
+                );
+            } else if previous == config.version {
+                println!("ForgeGuard config already at version {}.", config.version);
+            } else {
+                println!("ForgeGuard config migrated from version {previous} to 2.");
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         Commands::Doctor { json } => {
             let config = if root.join(CONFIG_FILE).exists() {
                 Some(ForgeGuardConfig::load(&root)?)
@@ -395,7 +458,7 @@ fn execute() -> Result<ExitCode> {
             let config = ForgeGuardConfig::load(&root).context(
                 "ForgeGuard is not initialized; run `forgeguard init` in the repository first",
             )?;
-            let baseline = create_baseline(&root, &config.scan, force)?;
+            let baseline = create_baseline_with_config(&root, &config, force)?;
             if json {
                 println!(
                     "{}",
@@ -688,6 +751,7 @@ fn render_gate_output(report: &GateReport, json: bool, output: OutputArg) -> Res
             OutputArg::Full => print!("{}", render_gate(report)),
             OutputArg::Compact => println!("{}", render_gate_compact(report)),
             OutputArg::Quiet => {}
+            OutputArg::Sarif => println!("{}", render_sarif(report)?),
         }
     }
     Ok(())
@@ -811,7 +875,9 @@ fn render_file_changes(written: &[String], skipped: &[String]) {
 mod tests {
     use clap::Parser;
 
-    use super::{agents_from_names, AgentTarget, BaselineCommands, Cli, Commands};
+    use super::{
+        agents_from_names, AgentTarget, BaselineCommands, Cli, Commands, ConfigCommands, OutputArg,
+    };
 
     #[test]
     fn maps_checked_names_in_menu_order() {
@@ -846,6 +912,28 @@ mod tests {
                     force: true,
                     json: true
                 }
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_config_migration_and_sarif_output() {
+        let migrate = Cli::try_parse_from(["forgeguard", "config", "migrate", "--json"])
+            .expect("parse config migration");
+        assert!(matches!(
+            migrate.command,
+            Commands::Config {
+                command: ConfigCommands::Migrate { json: true }
+            }
+        ));
+
+        let sarif = Cli::try_parse_from(["forgeguard", "gate", "--output", "sarif"])
+            .expect("parse SARIF output");
+        assert!(matches!(
+            sarif.command,
+            Commands::Gate {
+                output: OutputArg::Sarif,
+                ..
             }
         ));
     }

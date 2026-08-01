@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fs,
     path::Path,
 };
@@ -12,7 +12,8 @@ use tree_sitter::{Language, Node, Parser};
 use crate::{
     config::ScanConfig,
     duplication::scan_duplicate_blocks,
-    model::{Finding, Severity},
+    model::{EvidenceConfidence, Finding, Severity},
+    rules,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -33,6 +34,12 @@ pub fn scan_project(
     let mut analyzer = Analyzer::new()?;
     let mut findings = Vec::new();
     let files = collect_source_files(root, config, options)?;
+    let project_files = if options.paths.is_some() {
+        collect_source_files(root, config, &ScanOptions::default())?
+    } else {
+        files.clone()
+    };
+    let semantic = SemanticIndex::build(&project_files);
 
     for path in &files {
         let metadata =
@@ -44,7 +51,7 @@ pub fn scan_project(
             continue;
         };
         let mut file_findings = Vec::new();
-        analyzer.scan_file(root, path, &source, &mut file_findings);
+        analyzer.scan_file(root, path, &source, &semantic, &mut file_findings);
         apply_inline_suppressions(&source, &mut file_findings);
         findings.extend(file_findings);
     }
@@ -55,14 +62,9 @@ pub fn scan_project(
             .map(|path| path.strip_prefix(root).unwrap_or(path).to_path_buf())
             .collect::<BTreeSet<_>>()
     });
-    let duplication_files = if options.paths.is_some() {
-        collect_source_files(root, config, &ScanOptions::default())?
-    } else {
-        files.clone()
-    };
     findings.extend(scan_duplicate_blocks(
         root,
-        &duplication_files,
+        &project_files,
         config.duplicate_block_lines,
         focus_paths.as_ref(),
     ));
@@ -251,6 +253,426 @@ struct Analyzer {
     ts_lang: Regex,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SinkSet(u8);
+
+impl SinkSet {
+    const DATABASE: Self = Self(1);
+    const NETWORK: Self = Self(2);
+
+    fn contains(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    fn insert(&mut self, other: Self) -> bool {
+        let previous = self.0;
+        self.0 |= other.0;
+        self.0 != previous
+    }
+}
+
+#[derive(Default)]
+struct FileProvenance {
+    database_symbols: HashSet<String>,
+    network_symbols: HashSet<String>,
+    local_symbols: HashSet<String>,
+}
+
+impl FileProvenance {
+    fn from_source(profile: LanguageProfile, source: &str) -> Self {
+        let mut provenance = Self::default();
+        for line in source.lines() {
+            let lower = line.to_ascii_lowercase();
+            let trimmed = line.trim_start();
+            let import_like = trimmed.starts_with("import ")
+                || trimmed.starts_with("from ")
+                || trimmed.starts_with("use ")
+                || trimmed.contains("require(");
+            if import_like {
+                let declaration = line.split(['\"', '\'']).next().unwrap_or(line);
+                provenance.local_symbols.extend(
+                    identifiers(declaration)
+                        .into_iter()
+                        .filter(|word| !binding_keywords().contains(&word.as_str())),
+                );
+                if let Some(path) = quoted_value(line) {
+                    if let Some(name) = path.rsplit('/').next() {
+                        provenance
+                            .local_symbols
+                            .insert(name.replace(['-', '.'], "_"));
+                    }
+                }
+            }
+            // forgeguard: allow FG-ALG-001 -- semantic package catalogs are fixed at eight entries or fewer
+            for (package, kind) in semantic_packages(profile) {
+                if !import_like || !contains_package(&lower, package) {
+                    continue;
+                }
+                let declaration = line.split(['\"', '\'']).next().unwrap_or(line);
+                let symbols = identifiers(declaration)
+                    .into_iter()
+                    .filter(|word| !binding_keywords().contains(&word.as_str()));
+                let target = if *kind == SinkSet::DATABASE {
+                    &mut provenance.database_symbols
+                } else {
+                    &mut provenance.network_symbols
+                };
+                target.extend(symbols);
+                if let Some(default) = package
+                    .rsplit('/')
+                    .next()
+                    .and_then(|part| part.rsplit('.').next())
+                {
+                    target.insert(default.replace('-', "_"));
+                }
+            }
+        }
+        if matches!(
+            profile,
+            LanguageProfile::JavaScript | LanguageProfile::TypeScript | LanguageProfile::Tsx
+        ) {
+            provenance.network_symbols.insert("fetch".to_owned());
+        }
+
+        // Resolve direct assignments such as `const prisma = new PrismaClient()`
+        // and `db, err := sql.Open(...)`. This stays lexical and path-insensitive.
+        for _ in 0..4 {
+            let mut changed = false;
+            // forgeguard: allow FG-ALG-001 -- assignment propagation is capped at four passes
+            for line in source.lines() {
+                let Some((left, right)) = line.split_once('=') else {
+                    continue;
+                };
+                // forgeguard: allow FG-ALG-002 -- keyword catalog is a fixed nine-entry slice
+                let Some(binding) = identifiers(left)
+                    .into_iter()
+                    .find(|word| !binding_keywords().contains(&word.as_str()))
+                else {
+                    continue;
+                };
+                let right_symbols = identifiers(&without_strings(right));
+                if right_symbols
+                    .iter()
+                    .any(|word| provenance.database_symbols.contains(word))
+                {
+                    changed |= provenance.database_symbols.insert(binding.clone());
+                }
+                if right_symbols
+                    .iter()
+                    .any(|word| provenance.network_symbols.contains(word))
+                {
+                    changed |= provenance.network_symbols.insert(binding);
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        provenance
+    }
+
+    fn classify(&self, callee: &str, method: &str) -> SinkSet {
+        let parts = identifiers(callee);
+        let mut sinks = SinkSet::default();
+        if parts
+            .iter()
+            .any(|part| self.database_symbols.contains(part))
+            && database_methods().contains(&normalized_method(method).as_str())
+        {
+            sinks.insert(SinkSet::DATABASE);
+        }
+        if parts.iter().any(|part| self.network_symbols.contains(part))
+            && network_methods().contains(&normalized_method(method).as_str())
+        {
+            sinks.insert(SinkSet::NETWORK);
+        }
+        sinks
+    }
+}
+
+#[derive(Default)]
+struct SemanticIndex {
+    files: HashMap<std::path::PathBuf, FileProvenance>,
+    functions: HashMap<String, SinkSet>,
+}
+
+struct FunctionDraft {
+    name: String,
+    sinks: SinkSet,
+    calls: Vec<String>,
+}
+
+fn collect_function_drafts(
+    root: Node<'_>,
+    source: &str,
+    profile: LanguageProfile,
+    provenance: &FileProvenance,
+    drafts: &mut Vec<FunctionDraft>,
+    counts: &mut HashMap<String, usize>,
+) {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if profile.is_function(node.kind()) {
+            let Some(name) = node
+                .child_by_field_name("name")
+                .map(|name| node_text(name, source).to_owned())
+            else {
+                continue;
+            };
+            let body = node.child_by_field_name("body").unwrap_or(node);
+            let mut sinks = SinkSet::default();
+            let mut calls = Vec::new();
+            let mut body_stack = vec![body];
+            // forgeguard: allow FG-ALG-001 -- function bodies are disjoint; nested functions are skipped here
+            while let Some(child) = body_stack.pop() {
+                if child != body && profile.is_function(child.kind()) {
+                    continue;
+                }
+                if let Some(callee) = call_name(child, source) {
+                    let method = terminal_name(callee);
+                    sinks.insert(provenance.classify(callee, method));
+                    calls.push(method.to_owned());
+                }
+                body_stack.extend(
+                    (0..child.named_child_count())
+                        .filter_map(|index| child.named_child(index as u32)),
+                );
+            }
+            *counts.entry(name.clone()).or_default() += 1;
+            drafts.push(FunctionDraft { name, sinks, calls });
+        }
+        stack.extend(
+            (0..node.named_child_count()).filter_map(|index| node.named_child(index as u32)),
+        );
+    }
+}
+
+fn semantic_packages(profile: LanguageProfile) -> &'static [(&'static str, SinkSet)] {
+    const JS: &[(&str, SinkSet)] = &[
+        ("@prisma/client", SinkSet::DATABASE),
+        ("sequelize", SinkSet::DATABASE),
+        ("typeorm", SinkSet::DATABASE),
+        ("drizzle-orm", SinkSet::DATABASE),
+        ("mongoose", SinkSet::DATABASE),
+        ("axios", SinkSet::NETWORK),
+        ("undici", SinkSet::NETWORK),
+    ];
+    const PYTHON: &[(&str, SinkSet)] = &[
+        ("sqlalchemy", SinkSet::DATABASE),
+        ("django.db", SinkSet::DATABASE),
+        ("psycopg", SinkSet::DATABASE),
+        ("asyncpg", SinkSet::DATABASE),
+        ("requests", SinkSet::NETWORK),
+        ("httpx", SinkSet::NETWORK),
+        ("aiohttp", SinkSet::NETWORK),
+        ("urllib", SinkSet::NETWORK),
+    ];
+    const RUST: &[(&str, SinkSet)] = &[
+        ("sqlx", SinkSet::DATABASE),
+        ("diesel", SinkSet::DATABASE),
+        ("sea_orm", SinkSet::DATABASE),
+        ("reqwest", SinkSet::NETWORK),
+        ("hyper", SinkSet::NETWORK),
+    ];
+    const GO: &[(&str, SinkSet)] = &[
+        ("database/sql", SinkSet::DATABASE),
+        ("jmoiron/sqlx", SinkSet::DATABASE),
+        ("gorm.io/gorm", SinkSet::DATABASE),
+        ("net/http", SinkSet::NETWORK),
+    ];
+    match profile {
+        LanguageProfile::JavaScript | LanguageProfile::TypeScript | LanguageProfile::Tsx => JS,
+        LanguageProfile::Python => PYTHON,
+        LanguageProfile::Rust => RUST,
+        LanguageProfile::Go => GO,
+        _ => &[],
+    }
+}
+
+fn identifiers(value: &str) -> Vec<String> {
+    value
+        .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .filter(|part| {
+            !part.is_empty()
+                && part
+                    .as_bytes()
+                    .first()
+                    .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+fn contains_package(source: &str, package: &str) -> bool {
+    source.match_indices(package).any(|(start, _)| {
+        let before = source[..start].chars().next_back();
+        let after = source[start + package.len()..].chars().next();
+        !before.is_some_and(package_identifier_character)
+            && !after.is_some_and(package_identifier_character)
+    })
+}
+
+fn package_identifier_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '_' | '-')
+}
+
+fn quoted_value(line: &str) -> Option<&str> {
+    for quote in ['\"', '\''] {
+        if let Some((_, rest)) = line.split_once(quote) {
+            if let Some((value, _)) = rest.split_once(quote) {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+fn without_strings(value: &str) -> String {
+    let mut quote = None;
+    value
+        .chars()
+        .map(|character| match quote {
+            Some(active) if character == active => {
+                quote = None;
+                ' '
+            }
+            Some(_) => ' ',
+            None if matches!(character, '\"' | '\'') => {
+                quote = Some(character);
+                ' '
+            }
+            None => character,
+        })
+        .collect()
+}
+
+fn binding_keywords() -> &'static [&'static str] {
+    &[
+        "as", "const", "from", "import", "let", "mut", "require", "use", "var",
+    ]
+}
+
+fn database_methods() -> &'static [&'static str] {
+    &[
+        "create",
+        "delete",
+        "execute",
+        "fetch",
+        "fetchall",
+        "fetchone",
+        "findfirst",
+        "findmany",
+        "findunique",
+        "insert",
+        "insertinto",
+        "open",
+        "query",
+        "save",
+        "update",
+    ]
+}
+
+fn network_methods() -> &'static [&'static str] {
+    &[
+        "delete", "fetch", "get", "patch", "post", "put", "request", "send",
+    ]
+}
+
+impl SemanticIndex {
+    fn build(files: &[std::path::PathBuf]) -> Self {
+        let mut index = Self::default();
+        let mut drafts = Vec::new();
+        let mut counts = HashMap::<String, usize>::new();
+        for path in files {
+            let Some(profile) =
+                LanguageProfile::from_path(path).filter(|profile| profile.has_semantic_pack())
+            else {
+                continue;
+            };
+            let Ok(source) = fs::read_to_string(path) else {
+                continue;
+            };
+            let mut provenance = FileProvenance::from_source(profile, &source);
+            let mut parser = Parser::new();
+            if parser.set_language(&profile.language()).is_err() {
+                continue;
+            }
+            let Some(tree) = parser
+                .parse(&source, None)
+                .filter(|tree| !tree.root_node().has_error())
+            else {
+                continue;
+            };
+            let draft_start = drafts.len();
+            collect_function_drafts(
+                tree.root_node(),
+                &source,
+                profile,
+                &provenance,
+                &mut drafts,
+                &mut counts,
+            );
+            provenance
+                .local_symbols
+                .extend(drafts[draft_start..].iter().map(|draft| draft.name.clone()));
+            index.files.insert(path.clone(), provenance);
+        }
+
+        for draft in &drafts {
+            if counts.get(&draft.name) == Some(&1) {
+                index.functions.insert(draft.name.clone(), draft.sinks);
+            }
+        }
+        for _ in 0..drafts.len().max(1) {
+            let mut changed = false;
+            // ponytail: project-wide fixed point is O(F × (F+E)); use SCC condensation if measured on huge projects
+            // forgeguard: allow FG-ALG-001 -- bounded by finite function/call graph and exits when no summary changes
+            for draft in &drafts {
+                if counts.get(&draft.name) != Some(&1) {
+                    continue;
+                }
+                let inherited = draft
+                    .calls
+                    .iter()
+                    .fold(SinkSet::default(), |mut sinks, call| {
+                        if let Some(summary) = index.functions.get(call) {
+                            sinks.insert(*summary);
+                        }
+                        sinks
+                    });
+                changed |= index
+                    .functions
+                    .entry(draft.name.clone())
+                    .or_default()
+                    .insert(inherited);
+            }
+            if !changed {
+                break;
+            }
+        }
+        index
+    }
+
+    fn classify(&self, path: &Path, callee: &str, method: &str) -> SinkSet {
+        let mut sinks = self
+            .files
+            .get(path)
+            .map(|provenance| provenance.classify(callee, method))
+            .unwrap_or_default();
+        let terminal = terminal_name(callee);
+        if self
+            .files
+            .get(path)
+            .is_some_and(|provenance| provenance.local_symbols.contains(terminal))
+        {
+            if let Some(summary) = self.functions.get(terminal) {
+                sinks.insert(*summary);
+            }
+        }
+        sinks
+    }
+}
+
 impl Analyzer {
     fn new() -> Result<Self> {
         Ok(Self {
@@ -302,7 +724,14 @@ impl Analyzer {
         Some((profile, mask_outside(source, &regions)))
     }
 
-    fn scan_file(&mut self, root: &Path, path: &Path, source: &str, findings: &mut Vec<Finding>) {
+    fn scan_file(
+        &mut self,
+        root: &Path,
+        path: &Path,
+        source: &str,
+        semantic: &SemanticIndex,
+        findings: &mut Vec<Finding>,
+    ) {
         let relative = path.strip_prefix(root).unwrap_or(path).to_path_buf();
         let component = self.extract_component_script(path, source);
         let (profile, source, emit_parse_errors) = match component.as_ref() {
@@ -362,6 +791,7 @@ impl Analyzer {
             if let Some(callee) = call_name(node, source) {
                 let in_loop = loop_depth > 0;
                 let method = terminal_name(callee);
+                let semantic_sinks = semantic.classify(path, callee, method);
                 if in_loop && profile.is_linear_lookup(method) {
                     findings.push(finding_for_node(
                         "FG-ALG-002",
@@ -373,7 +803,7 @@ impl Analyzer {
                         "Pre-index the lookup collection with a map or set when its size can grow.",
                     ));
                 }
-                if in_loop && is_database_call(callee, method) {
+                if in_loop && semantic_sinks.contains(SinkSet::DATABASE) {
                     findings.push(finding_for_node(
                         "FG-DB-001",
                         "Database operation inside iteration",
@@ -383,8 +813,18 @@ impl Analyzer {
                         source,
                         "Replace per-item database access with a set-based query, join, eager load, prefetch, or bulk operation.",
                     ));
+                } else if in_loop && is_database_call(callee, method) {
+                    findings.push(finding_for_node(
+                        "FG-DB-002",
+                        "Potential database operation inside iteration",
+                        Severity::Info,
+                        &relative,
+                        node,
+                        source,
+                        "Confirm receiver provenance. Batch the operation if it performs database I/O.",
+                    ));
                 }
-                if in_loop && is_network_call(callee, method) {
+                if in_loop && semantic_sinks.contains(SinkSet::NETWORK) {
                     findings.push(finding_for_node(
                         "FG-NET-001",
                         "External request inside iteration",
@@ -393,6 +833,16 @@ impl Analyzer {
                         node,
                         source,
                         "Use API batching or bounded concurrency with timeouts and partial-failure handling.",
+                    ));
+                } else if in_loop && is_network_call(callee, method) {
+                    findings.push(finding_for_node(
+                        "FG-NET-002",
+                        "Potential external request inside iteration",
+                        Severity::Info,
+                        &relative,
+                        node,
+                        source,
+                        "Confirm receiver provenance. Batch or bound concurrency if this performs network I/O.",
                     ));
                 }
                 if in_loop
@@ -527,6 +977,52 @@ enum LanguageProfile {
 }
 
 impl LanguageProfile {
+    fn family(self) -> &'static str {
+        match self {
+            Self::JavaScript | Self::TypeScript | Self::Tsx => "javascript",
+            Self::Rust => "rust",
+            Self::Go => "go",
+            Self::Python => "python",
+            Self::Java => "java",
+            Self::Kotlin => "kotlin",
+            Self::CSharp => "csharp",
+            Self::C => "c",
+            Self::Cpp => "cpp",
+            Self::Ruby => "ruby",
+            Self::Php => "php",
+            Self::Swift => "swift",
+            Self::Dart => "dart",
+            Self::Bash => "shell",
+            Self::Zig => "zig",
+            Self::Lua => "lua",
+            Self::Scala => "scala",
+            Self::Solidity => "solidity",
+            Self::Elixir => "elixir",
+            Self::Erlang => "erlang",
+            Self::RLang => "r",
+            Self::Hcl => "hcl",
+        }
+    }
+
+    fn has_semantic_pack(self) -> bool {
+        matches!(
+            self,
+            Self::JavaScript | Self::TypeScript | Self::Tsx | Self::Python | Self::Rust | Self::Go
+        )
+    }
+
+    fn is_function(self, kind: &str) -> bool {
+        match self {
+            Self::JavaScript | Self::TypeScript | Self::Tsx => {
+                matches!(kind, "function_declaration" | "method_definition")
+            }
+            Self::Python => kind == "function_definition",
+            Self::Rust => kind == "function_item",
+            Self::Go => matches!(kind, "function_declaration" | "method_declaration"),
+            _ => false,
+        }
+    }
+
     fn from_path(path: &Path) -> Option<Self> {
         match path.extension()?.to_str()? {
             "js" | "jsx" | "mjs" | "cjs" => Some(Self::JavaScript),
@@ -719,6 +1215,120 @@ impl LanguageProfile {
             _ => false,
         }
     }
+}
+
+pub(crate) struct CanonicalFunction {
+    pub profile: &'static str,
+    pub line: usize,
+    pub canonical: String,
+    pub original: String,
+}
+
+pub(crate) fn canonical_functions(
+    path: &Path,
+    source: &str,
+    minimum_lines: usize,
+) -> Vec<CanonicalFunction> {
+    let Some(profile) = LanguageProfile::from_path(path) else {
+        return Vec::new();
+    };
+    let mut parser = Parser::new();
+    if parser.set_language(&profile.language()).is_err() {
+        return Vec::new();
+    }
+    let Some(tree) = parser
+        .parse(source, None)
+        .filter(|tree| !tree.root_node().has_error())
+    else {
+        return Vec::new();
+    };
+    let mut functions = Vec::new();
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        if is_clone_scope(node.kind())
+            && node.end_position().row + 1 >= node.start_position().row + minimum_lines
+        {
+            let mut identifiers = HashMap::new();
+            let mut canonical = String::new();
+            canonicalize_node(node, source, &mut identifiers, &mut canonical);
+            functions.push(CanonicalFunction {
+                profile: profile.family(),
+                line: node.start_position().row + 1,
+                canonical,
+                original: node_text(node, source)
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            });
+        } else {
+            stack.extend(
+                (0..node.named_child_count()).filter_map(|index| node.named_child(index as u32)),
+            );
+        }
+    }
+    functions
+}
+
+fn is_clone_scope(kind: &str) -> bool {
+    matches!(
+        kind,
+        "function_declaration"
+            | "function_definition"
+            | "function_item"
+            | "method"
+            | "method_declaration"
+            | "method_definition"
+            | "constructor_declaration"
+    )
+}
+
+fn canonicalize_node(
+    node: Node<'_>,
+    source: &str,
+    identifiers: &mut HashMap<String, usize>,
+    output: &mut String,
+) {
+    if node.kind().contains("comment") {
+        return;
+    }
+    output.push('(');
+    output.push_str(node.kind());
+    if node.child_count() == 0 {
+        output.push(':');
+        let text = node_text(node, source);
+        if is_local_identifier(node) {
+            let next = identifiers.len();
+            let id = *identifiers.entry(text.to_owned()).or_insert(next);
+            output.push('v');
+            output.push_str(&id.to_string());
+        } else {
+            output.push_str(text);
+        }
+    } else {
+        for index in 0..node.child_count() {
+            if let Some(child) = node.child(index as u32) {
+                canonicalize_node(child, source, identifiers, output);
+            }
+        }
+    }
+    output.push(')');
+}
+
+fn is_local_identifier(node: Node<'_>) -> bool {
+    if node.kind() != "identifier" && node.kind() != "simple_identifier" {
+        return false;
+    }
+    let Some(parent) = node.parent() else {
+        return true;
+    };
+    for field in ["field", "function", "method", "name", "property"] {
+        if parent.child_by_field_name(field) == Some(node)
+            && matches!(field, "field" | "function" | "method" | "property")
+        {
+            return false;
+        }
+    }
+    true
 }
 
 /// Blank every byte outside `regions` (non-newline → space, newline kept) so
@@ -979,6 +1589,10 @@ fn finding(
         rule_id: rule_id.to_owned(),
         title: title.to_owned(),
         severity,
+        confidence: rules::metadata(rule_id)
+            .map(|rule| rule.confidence)
+            .unwrap_or(EvidenceConfidence::Heuristic),
+        blocking: false,
         path: path.to_path_buf(),
         line,
         evidence: truncate(evidence, 240),

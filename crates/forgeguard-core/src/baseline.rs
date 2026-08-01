@@ -8,13 +8,13 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::ScanConfig,
+    config::{ForgeGuardConfig, ScanConfig},
     model::{Finding, Severity},
     scanner::{scan_project, ScanOptions},
 };
 
 pub const BASELINE_FILE: &str = ".forgeguard/baseline.json";
-const BASELINE_VERSION: u32 = 1;
+const BASELINE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Baseline {
@@ -34,7 +34,6 @@ pub struct BaselineEntry {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct BaselineKey {
     rule_id: String,
-    severity: Severity,
     path: String,
     evidence: String,
 }
@@ -43,15 +42,18 @@ impl Baseline {
     pub fn from_findings(findings: &[Finding]) -> Self {
         let mut counts = BTreeMap::new();
         for finding in findings {
-            *counts.entry(key_for_finding(finding)).or_insert(0) += 1;
+            let (_, count) = counts
+                .entry(key_for_finding(finding))
+                .or_insert((finding.severity, 0usize));
+            *count = count.saturating_add(1);
         }
         Self {
             version: BASELINE_VERSION,
             findings: counts
                 .into_iter()
-                .map(|(key, count)| BaselineEntry {
+                .map(|(key, (severity, count))| BaselineEntry {
                     rule_id: key.rule_id,
-                    severity: key.severity,
+                    severity,
                     path: key.path,
                     evidence: key.evidence,
                     count,
@@ -69,7 +71,7 @@ impl Baseline {
             .with_context(|| format!("failed to read {}", path.display()))?;
         let baseline: Self = serde_json::from_str(&source)
             .with_context(|| format!("failed to parse {}", path.display()))?;
-        if baseline.version != BASELINE_VERSION {
+        if !matches!(baseline.version, 1 | BASELINE_VERSION) {
             bail!(
                 "unsupported baseline version {} in {}; expected {}",
                 baseline.version,
@@ -113,6 +115,23 @@ impl Baseline {
 }
 
 pub fn create_baseline(root: &Path, config: &ScanConfig, force: bool) -> Result<Baseline> {
+    ensure_baseline_can_be_created(root, force)?;
+    let findings = scan_project(root, config, &ScanOptions::default())?;
+    write_baseline(root, &findings)
+}
+
+pub fn create_baseline_with_config(
+    root: &Path,
+    config: &ForgeGuardConfig,
+    force: bool,
+) -> Result<Baseline> {
+    ensure_baseline_can_be_created(root, force)?;
+    let mut findings = scan_project(root, &config.scan, &ScanOptions::default())?;
+    findings.retain_mut(|finding| config.apply_rule(&finding.rule_id, &mut finding.severity));
+    write_baseline(root, &findings)
+}
+
+fn ensure_baseline_can_be_created(root: &Path, force: bool) -> Result<()> {
     let path = root.join(BASELINE_FILE);
     if path.exists() && !force {
         bail!(
@@ -120,9 +139,12 @@ pub fn create_baseline(root: &Path, config: &ScanConfig, force: bool) -> Result<
             path.display()
         );
     }
+    Ok(())
+}
 
-    let findings = scan_project(root, config, &ScanOptions::default())?;
-    let baseline = Baseline::from_findings(&findings);
+fn write_baseline(root: &Path, findings: &[Finding]) -> Result<Baseline> {
+    let path = root.join(BASELINE_FILE);
+    let baseline = Baseline::from_findings(findings);
     let parent = path
         .parent()
         .context("ForgeGuard baseline path has no parent")?;
@@ -137,7 +159,6 @@ pub fn create_baseline(root: &Path, config: &ScanConfig, force: bool) -> Result<
 fn key_for_finding(finding: &Finding) -> BaselineKey {
     BaselineKey {
         rule_id: finding.rule_id.clone(),
-        severity: finding.severity,
         path: portable_path(&finding.path),
         evidence: finding.evidence.clone(),
     }
@@ -146,7 +167,6 @@ fn key_for_finding(finding: &Finding) -> BaselineKey {
 fn key_for_entry(entry: &BaselineEntry) -> BaselineKey {
     BaselineKey {
         rule_id: entry.rule_id.clone(),
-        severity: entry.severity,
         path: entry.path.clone(),
         evidence: entry.evidence.clone(),
     }

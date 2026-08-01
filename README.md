@@ -21,7 +21,7 @@ inspect → design → implement → test → review → verify
 
 ForgeGuard pushes generated code toward the discipline expected from a top-tier software engineering team: correct boundaries, reusable behavior, efficient algorithms and queries, explicit failure handling, focused tests, reviewed diffs, and claims backed by executed evidence.
 
-Universal rules, skills, hooks, and repository commands work with any language. Deep structural rules use Tree-sitter for JavaScript, TypeScript, TSX, Rust, Go, Python, Java, Kotlin, C#, C, C++, Ruby, PHP, Swift, Dart, and Shell. Every language still receives workflow enforcement and configured quality commands; common non-parser source types also receive exact duplicate checks. Findings remain review evidence, not a substitute for tests, profilers, or query plans.
+Workflow supervision and configured repository commands work with any language. Parser, structural-rule, and semantic-pack coverage are separate capabilities: Tree-sitter supplies syntax evidence across the listed profiles, while bounded import/binding and local-wrapper provenance is currently available for JavaScript/TypeScript, Python, Rust, and Go. Run `forgeguard capabilities` for the exact matrix. ForgeGuard is an AST-assisted quality scanner, not a whole-program semantic analyzer; findings remain review evidence, not a substitute for compilers, tests, profilers, or query plans.
 
 ## Why ForgeGuard
 
@@ -56,7 +56,8 @@ A blocked gate may cause the host agent to use another turn to fix real failures
 
 - Rust single-binary CLI.
 - Lightweight source detection across common backend, frontend, mobile, systems, data, script, and infrastructure languages.
-- AST-backed loop and call-site analysis for 16 common language profiles.
+- AST-backed loop and call-site analysis across the published parser capability matrix.
+- Bounded database/network provenance packs for JavaScript/TypeScript, Python, Rust, and Go.
 - Codex `AGENTS.md` plus project skills.
 - Claude Code `CLAUDE.md` plus project skills.
 - Cursor always-on rule plus shared project skills.
@@ -70,7 +71,7 @@ A blocked gate may cause the host agent to use another turn to fix real failures
 - `default`, `lite`, and `strict` operating modes with project and global persistence.
 - Committed finding baselines for adopting strict gates without accepting new debt.
 - Interactive mode selection during `forgeguard init` and via `forgeguard mode`.
-- Human-readable and JSON reports.
+- Human-readable, JSON, and SARIF 2.1.0 reports.
 
 ## Install
 
@@ -198,6 +199,7 @@ Produce machine-readable output:
 
 ```bash
 forgeguard gate --json
+forgeguard review --output sarif > forgeguard.sarif
 ```
 
 Produce bounded agent-facing output:
@@ -268,7 +270,7 @@ Other agents receive the universal CLI gate immediately. Agents that understand 
 Example:
 
 ```toml
-version = 1
+version = 2
 mode = "default"
 
 [project]
@@ -280,6 +282,14 @@ max_file_bytes = 1000000
 include_tests = false
 extra_excludes = ["generated/"]
 duplicate_block_lines = 6
+
+[policies]
+warnings_block = false
+
+[rules.FG-NET-001]
+enabled = true
+severity = "warning"
+block = true
 
 [focus]
 enabled = true
@@ -308,11 +318,13 @@ timeout_seconds = 600
 
 ForgeGuard supports three operating modes:
 
-- `default`: token-friendly default for new installs. Static findings are reported, but only failed required commands block.
+- `default`: failed required commands block; static findings block only when a rule sets `block = true`.
 - `lite`: report-only mode for baselining or cleanup work. Static findings do not block.
-- `strict`: strong guard mode. Failed required commands and error-level deterministic findings block.
+- `strict`: failed required commands plus Warning- and Error-level static findings block. Info remains evidence.
 
-Older configs with `mode = "guard"` still load as `strict` for compatibility.
+Version 1 configs preserve the old Strict behavior that blocks only Error findings. Run `forgeguard config migrate` to opt into version 2 policy; older `mode = "guard"` values still load as `strict`.
+
+Per-rule `enabled`, `severity`, and `block` override global policy. `Lite` always keeps static findings nonblocking. Required command failures block in every mode.
 
 Focus state and scope checks are local and make no LLM calls. `max_retries` bounds corrective turns; `no_progress_limit` stops a session that produces no repository or task-state progress. `auto_poke` is enabled automatically by `forgeguard init`; each continuation creates a new host request and consumes model tokens, so `max_auto_pokes` defaults to three and has a hard cap of five. Set `auto_poke = false` only when manually opting out. Pending todos, confidence below `min_confidence`, or goal-contract completeness below `min_hill_climbability` keep the task active. Hill-climbability is a deterministic 0–100 completeness score: metric, baseline, target, guardrail, and verification contribute 20 points each. ForgeGuard does not guess these fields from prose. `forgeguard task start --semantic` only asks a supported host to use its native goal evaluator.
 
@@ -359,8 +371,10 @@ When run in a terminal without an explicit mode, `forgeguard mode` opens the sam
 |---|---|
 | `forgeguard init` | Install project configuration and agent skills. Use `--global` for user-level skills. |
 | `forgeguard detect` | Detect languages, frameworks, database tools, tests, and commands. |
+| `forgeguard capabilities` | Show workflow, parser, structural-rule, and semantic-pack coverage. |
 | `forgeguard doctor` | Verify configuration, Git, and required local tools. |
 | `forgeguard mode` | Check or change project/global operating mode. |
+| `forgeguard config migrate` | Upgrade config v1 to v2 without resetting commands or focus settings. |
 | `forgeguard gate` | Run static rules and configured quality commands. |
 | `forgeguard review` | Scan Git-changed files without running commands. |
 | `forgeguard baseline create` | Record current static findings so gates report only new findings. |
@@ -394,8 +408,8 @@ Agents must follow `inspect → design → implement → test → review → ver
 
 ForgeGuard separates rules into:
 
-1. **Deterministic:** failed tests, database I/O inside a proven loop, or failed build commands can block.
-2. **Heuristic:** possible nested scans or duplicate code provide evidence and require review.
+1. **Deterministic/semantic:** failed commands and provenance-confirmed database/network calls can block.
+2. **Structural/heuristic:** possible nested scans, receiver-name matches, and duplicate code provide review evidence with explicit confidence.
 3. **Evidence-based:** performance and quality improvements require benchmarks, query plans, profiler output, or evaluation reports.
 
 See [Rule catalog](docs/RULES.md) and [Architecture](docs/ARCHITECTURE.md).
@@ -407,13 +421,15 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
 cargo build --workspace
+cargo deny check
+cargo audit --deny warnings
 ```
 
 Maintainers publish binaries by pushing a tag matching the workspace version, for example `v0.2.0`. The release workflow verifies the tag, tests the repository and installers, builds six native platform archives, generates checksums, and publishes the GitHub Release automatically.
 
 ## Security
 
-ForgeGuard executes commands declared in a repository's `.forgeguard/config.toml`. Review configuration and agent hooks before trusting an untrusted repository. See [SECURITY.md](SECURITY.md).
+ForgeGuard executes commands declared in a repository's `.forgeguard/config.toml`. Review configuration and agent hooks before trusting an untrusted repository. CI runs `cargo-deny` and `cargo-audit`; GitHub Actions are commit-SHA pinned and updated through Dependabot. See [SECURITY.md](SECURITY.md).
 
 ## License
 

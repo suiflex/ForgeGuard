@@ -19,7 +19,7 @@ fn blocked_hook_is_compact_cached_and_bounded() {
     for index in 0..40 {
         fs::write(
             directory.path().join(format!("repository-{index}.ts")),
-            "for (const user of users) { await db.query('SELECT id FROM users'); }\n",
+            "import { PrismaClient } from '@prisma/client';\nconst db = new PrismaClient();\nfor (const user of users) { await db.query('SELECT id FROM users'); }\n",
         )
         .expect("write source");
     }
@@ -438,7 +438,7 @@ fn stop_retry_budget_is_isolated_by_session() {
     config.save(directory.path()).expect("save config");
     fs::write(
         directory.path().join("service.ts"),
-        "for (const user of users) { await db.query('SELECT id FROM users'); }\n",
+        "import { PrismaClient } from '@prisma/client';\nconst db = new PrismaClient();\nfor (const user of users) { await db.query('SELECT id FROM users'); }\n",
     )
     .expect("write source");
     let input = |session: &str| {
@@ -471,7 +471,7 @@ fn cursor_transcript_path_isolates_retry_budget_without_a_session_id() {
     config.save(directory.path()).expect("save config");
     fs::write(
         directory.path().join("service.ts"),
-        "for (const user of users) { await db.query('SELECT id FROM users'); }\n",
+        "import { PrismaClient } from '@prisma/client';\nconst db = new PrismaClient();\nfor (const user of users) { await db.query('SELECT id FROM users'); }\n",
     )
     .expect("write source");
     let input = |transcript: &str| {
@@ -525,7 +525,7 @@ fn auto_gate_reports_without_blocking_without_config_and_ignores_artifacts() {
     fs::write(directory.path().join(".gitignore"), "node_modules/\n").expect("write gitignore");
     fs::write(
         directory.path().join("service.ts"),
-        "for (const user of users) { await db.query('SELECT id FROM users WHERE id = 1'); }\n",
+        "import { PrismaClient } from '@prisma/client';\nconst db = new PrismaClient();\nfor (const user of users) { await db.query('SELECT id FROM users WHERE id = 1'); }\n",
     )
     .expect("write source");
 

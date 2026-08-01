@@ -1,11 +1,14 @@
 use std::fs;
 
 use forgeguard_core::{
-    create_baseline, run_gate, ForgeGuardConfig, GateOptions, GateStatus, GuardMode, BASELINE_FILE,
+    create_baseline, create_baseline_with_config, run_gate, ForgeGuardConfig, GateOptions,
+    GateStatus, GuardMode, BASELINE_FILE,
 };
 use tempfile::tempdir;
 
 const EXISTING_FINDING: &str = r#"
+import { PrismaClient } from "@prisma/client";
+const db = new PrismaClient();
 for (const user of users) {
   await db.query("SELECT id FROM profiles WHERE user_id = ?", [user.id]);
 }
@@ -19,7 +22,8 @@ fn baseline_hides_existing_finding_after_line_move() {
     let mut config = ForgeGuardConfig::new("sample", Vec::new());
     config.mode = GuardMode::Strict;
 
-    let baseline = create_baseline(directory.path(), &config.scan, false).expect("create baseline");
+    let baseline =
+        create_baseline_with_config(directory.path(), &config, false).expect("create baseline");
     assert_eq!(baseline.total_findings(), 1);
 
     fs::write(&source, format!("\n\n{EXISTING_FINDING}")).expect("move finding");
@@ -45,11 +49,13 @@ fn baseline_reports_additional_matching_finding() {
     fs::write(&source, EXISTING_FINDING).expect("write source");
     let mut config = ForgeGuardConfig::new("sample", Vec::new());
     config.mode = GuardMode::Strict;
-    create_baseline(directory.path(), &config.scan, false).expect("create baseline");
+    create_baseline_with_config(directory.path(), &config, false).expect("create baseline");
 
     fs::write(
         &source,
         r#"
+import { PrismaClient } from "@prisma/client";
+const db = new PrismaClient();
 for (const user of users) {
   await db.query("SELECT id FROM profiles WHERE user_id = ?", [user.id]);
   await db.query("SELECT id FROM profiles WHERE user_id = ?", [user.id]);

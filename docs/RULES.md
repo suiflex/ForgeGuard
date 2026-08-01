@@ -14,7 +14,11 @@ Heuristic warning for repeated sorting. Consider one-time sorting, an ordered st
 
 ## FG-DB-001 — Database operation inside iteration
 
-Error-level rule for database-looking operations inside an active loop. Prefer set-based queries, joins, eager loading, prefetch, or bulk operations.
+Error-level rule for a provenance-confirmed database operation inside an active loop. JavaScript/TypeScript, Python, Rust, and Go packs resolve supported imports, lexical aliases, and unique local wrapper summaries.
+
+## FG-DB-002 — Potential database operation inside iteration
+
+Informational name-based fallback. Receiver names alone never produce the semantic-confirmed rule.
 
 ## FG-DB-005 — Potential unnecessary SELECT *
 
@@ -22,7 +26,11 @@ Warns when a query selects every column. Confirm whether all columns are require
 
 ## FG-NET-001 — External request inside iteration
 
-Warns when common HTTP-client calls are executed inside a loop. Prefer batching or bounded concurrency with timeout, rate-limit handling, retry classification, and partial-failure behavior.
+Warns when a provenance-confirmed HTTP-client call is executed inside a loop. Prefer batching or bounded concurrency with timeout, rate-limit handling, retry classification, and partial-failure behavior.
+
+## FG-NET-002 — Potential external request inside iteration
+
+Informational name-based fallback for unresolved receivers such as a generic `client`.
 
 ## FG-CON-001 — Potential unbounded parallel execution
 
@@ -32,13 +40,17 @@ Warns on common fan-out patterns such as `Promise.all(collection.map(...))` and 
 
 Informational cross-file duplicate block signal. Extract only when the duplicated code represents the same responsibility and should evolve together.
 
+## FG-DRY-002 — Potential renamed duplicated implementation
+
+Informational same-language function clone with local identifiers alpha-normalized. Operators, literals, member names, and imported API names remain significant. This is Type-2 clone evidence, not semantic business-logic equivalence.
+
 ## FG-PARSE-001 — Structural analysis skipped
 
 Informational finding for supported files containing syntax errors or an unavailable grammar. ForgeGuard skips structural claims for that file instead of falling back to noisy lexical guesses.
 
 ## False positives
 
-ForgeGuard rules are evidence for review, not permission to refactor blindly. Structural scope proves code placement, not runtime cost or business intent. Configure narrow exclusions or use Lite/Guard mode while the analyzer evolves. Strict mode is intended for repositories that have reviewed their warning baseline.
+ForgeGuard rules are evidence for review, not permission to refactor blindly. Structural scope and bounded provenance do not prove runtime cost or business intent. Configure per-rule policy, narrow exclusions, or Lite mode while reviewing a baseline. Strict v2 blocks Warning and Error findings.
 
 A reviewed heuristic can be suppressed on its line or the preceding line with a required reason:
 

@@ -1,7 +1,9 @@
-use std::{fs, path::Path};
+use std::{collections::BTreeMap, fs, path::Path};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+
+use crate::model::Severity;
 
 pub const CONFIG_DIR: &str = ".forgeguard";
 pub const CONFIG_FILE: &str = ".forgeguard/config.toml";
@@ -13,9 +15,9 @@ pub enum GuardMode {
     /// Token-friendly default: report static findings but block only failed required commands.
     #[default]
     Default,
-    /// Report-only mode: never blocks; useful for baselining and cleanup lists.
+    /// Static report-only mode; required command failures still block.
     Lite,
-    /// Full guard mode: blocks failed required commands and error-level deterministic findings.
+    /// Full guard mode: blocks failed required commands and version-aware static findings.
     #[serde(alias = "guard")]
     Strict,
 }
@@ -91,6 +93,24 @@ pub struct FocusConfig {
     pub min_hill_climbability: u8,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PolicyConfig {
+    /// Overrides the mode default. Lite mode always remains report-only for
+    /// static findings.
+    #[serde(default)]
+    pub warnings_block: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct RuleConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub severity: Option<Severity>,
+    #[serde(default)]
+    pub block: Option<bool>,
+}
+
 impl Default for FocusConfig {
     fn default() -> Self {
         Self {
@@ -118,6 +138,10 @@ pub struct ForgeGuardConfig {
     pub commands: Vec<CommandConfig>,
     #[serde(default)]
     pub focus: FocusConfig,
+    #[serde(default)]
+    pub policies: PolicyConfig,
+    #[serde(default)]
+    pub rules: BTreeMap<String, RuleConfig>,
 }
 
 impl ForgeGuardConfig {
@@ -131,7 +155,49 @@ impl ForgeGuardConfig {
             scan: ScanConfig::default(),
             commands,
             focus: FocusConfig::default(),
+            policies: PolicyConfig::default(),
+            rules: BTreeMap::new(),
         }
+    }
+
+    pub fn apply_rule(&self, rule_id: &str, severity: &mut Severity) -> bool {
+        let Some(rule) = self.rules.get(rule_id) else {
+            return true;
+        };
+        if rule.enabled == Some(false) {
+            return false;
+        }
+        if let Some(override_severity) = rule.severity {
+            *severity = override_severity;
+        }
+        true
+    }
+
+    pub fn blocks_finding(&self, rule_id: &str, severity: Severity) -> bool {
+        if self.mode == GuardMode::Lite {
+            return false;
+        }
+        if let Some(block) = self.rules.get(rule_id).and_then(|rule| rule.block) {
+            return block;
+        }
+        match self.policies.warnings_block {
+            Some(true) => severity >= Severity::Warning,
+            Some(false) => self.mode == GuardMode::Strict && severity == Severity::Error,
+            None if self.version >= 2 && self.mode == GuardMode::Strict => {
+                severity >= Severity::Warning
+            }
+            None if self.mode == GuardMode::Strict => severity == Severity::Error,
+            None => false,
+        }
+    }
+
+    pub fn migrate_to_v2(&mut self) -> Result<u32> {
+        if !matches!(self.version, 1 | 2) {
+            bail!("cannot migrate unsupported config version {}", self.version);
+        }
+        let previous = self.version;
+        self.version = 2;
+        Ok(previous)
     }
 
     pub fn load(root: &Path) -> Result<Self> {
@@ -153,7 +219,16 @@ impl ForgeGuardConfig {
     fn load_from_path(path: &Path) -> Result<Self> {
         let source = fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
-        toml::from_str(&source).with_context(|| format!("failed to parse {}", path.display()))
+        let config: Self = toml::from_str(&source)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        if !matches!(config.version, 1 | 2) {
+            bail!(
+                "unsupported config version {} in {}; expected 1 or 2",
+                config.version,
+                path.display()
+            );
+        }
+        Ok(config)
     }
 
     fn save_to_path(&self, path: &Path) -> Result<()> {
@@ -172,7 +247,7 @@ fn default_true() -> bool {
 }
 
 fn default_config_version() -> u32 {
-    1
+    2
 }
 
 fn default_max_file_bytes() -> u64 {

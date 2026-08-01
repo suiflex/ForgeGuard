@@ -9,11 +9,14 @@ pub mod hook;
 pub mod init;
 pub mod model;
 pub mod report;
+pub mod rules;
 pub mod runner;
 pub mod scanner;
 pub mod update;
 
-pub use baseline::{create_baseline, Baseline, BaselineEntry, BASELINE_FILE};
+pub use baseline::{
+    create_baseline, create_baseline_with_config, Baseline, BaselineEntry, BASELINE_FILE,
+};
 pub use config::{CommandConfig, FocusConfig, ForgeGuardConfig, GuardMode};
 pub use detector::{detect_project, ProjectDetection};
 pub use doctor::{run_doctor, DoctorReport};
@@ -27,5 +30,6 @@ pub use hook::{
 pub use init::{
     initialize_global, initialize_project, AgentTarget, GlobalInitReport, InitOptions, InitReport,
 };
-pub use model::{CheckResult, Finding, GateReport, GateStatus, Severity};
+pub use model::{CheckResult, EvidenceConfidence, Finding, GateReport, GateStatus, Severity};
+pub use rules::{LanguageCapability, RuleMetadata, LANGUAGE_CAPABILITIES, RULES};
 pub use scanner::{scan_project, ScanOptions};

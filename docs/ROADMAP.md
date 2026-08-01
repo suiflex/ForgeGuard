@@ -24,10 +24,16 @@
 - Session-scoped objectives, todo/confidence state, deterministic hill-climbability, bounded retry/no-progress handling, context restoration, declared-scope warnings, and default-on auto-poke verification phases.
 - Cross-platform release binaries and checksum-verifying installers.
 
+## 0.8 — Policy, semantic evidence, and security hardening
+
+- Config v2 per-rule enablement, severity, and blocking policy with v1 compatibility.
+- Bounded database/network provenance packs for JavaScript/TypeScript, Python, Rust, and Go.
+- Published capability matrix, labeled precision/recall gate, Type-2 clone evidence, and SARIF 2.1.0.
+- `cargo-deny`, `cargo-audit`, SHA-pinned actions, and Dependabot.
+
 ## Next — Database and AI packs
 
-- Function-level data-flow and complexity analysis.
-- SARIF output.
+- Compiler-backed type/data-flow and complexity analysis.
 - MCP schema verification.
 - Query-plan evidence collection.
 - AI tool schema, agent-loop, RAG, token, and evaluation gates.

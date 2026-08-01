@@ -1,6 +1,8 @@
 use std::fmt::Write;
 
-use crate::{doctor::DoctorReport, model::GateReport, ProjectDetection};
+use serde_json::json;
+
+use crate::{doctor::DoctorReport, model::GateReport, rules::RULES, ProjectDetection, Severity};
 
 pub const COMPACT_MAX_CHARS: usize = 2_000;
 const COMPACT_MAX_FINDINGS: usize = 5;
@@ -117,6 +119,63 @@ pub fn render_gate_compact(report: &GateReport) -> String {
         let _ = writeln!(output, "- check {} failed: {evidence}", check.name);
     }
     truncate_chars(output.trim(), COMPACT_MAX_CHARS)
+}
+
+pub fn render_sarif(report: &GateReport) -> Result<String, serde_json::Error> {
+    let rules = RULES
+        .iter()
+        .map(|rule| {
+            json!({
+                "id": rule.id,
+                "name": rule.title,
+                "shortDescription": {"text": rule.title},
+                "defaultConfiguration": {"level": sarif_level(rule.default_severity)},
+                "properties": {"confidence": rule.confidence.as_str()},
+            })
+        })
+        .collect::<Vec<_>>();
+    let results = report
+        .findings
+        .iter()
+        .map(|finding| {
+            json!({
+                "ruleId": finding.rule_id,
+                "level": sarif_level(finding.severity),
+                "message": {
+                    "text": format!("{} Evidence: {} Fix: {}", finding.title, finding.evidence, finding.recommendation),
+                },
+                "locations": [{
+                    "physicalLocation": {
+                        "artifactLocation": {"uri": finding.path.to_string_lossy()},
+                        "region": {"startLine": finding.line},
+                    }
+                }],
+                "partialFingerprints": {
+                    "forgeguardFinding": format!("{}:{}:{}", finding.rule_id, finding.path.display(), finding.evidence),
+                },
+                "properties": {
+                    "confidence": finding.confidence.as_str(),
+                    "blocking": finding.blocking,
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::to_string_pretty(&json!({
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {"driver": {"name": "ForgeGuard", "rules": rules}},
+            "results": results,
+        }],
+    }))
+}
+
+fn sarif_level(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+        Severity::Info => "note",
+    }
 }
 
 pub fn render_doctor(report: &DoctorReport) -> String {

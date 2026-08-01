@@ -5,7 +5,7 @@ ForgeGuard is split into two crates:
 - `forgeguard-core`: project detection, configuration, initialization, scanning, command execution, health checks, and reporting.
 - `forgeguard`: the CLI interface and exit-code policy.
 
-Rules, skills, hooks, and configured repository commands are language-agnostic. Parser-backed findings are an additional evidence layer, not the boundary of ForgeGuard support.
+Workflow rules, skills, hooks, and configured repository commands are language-agnostic. Parser, structural-rule, and semantic-pack support are separate capability tiers exposed by `forgeguard capabilities`.
 
 ## Execution flow
 
@@ -34,18 +34,19 @@ Full reports stay local under `.forgeguard/reports/`; per-session task and hook 
 
 ## Scanner design
 
-Tree-sitter provides syntax and loop scope for JavaScript, TypeScript, TSX, Rust, Go, Python, Java, Kotlin, C#, C, C++, Ruby, PHP, Swift, Dart, and Shell. Call classification stays conservative and only examines actual call nodes. Files with syntax errors receive `FG-PARSE-001` and no structural claims.
+Tree-sitter provides syntax, call nodes, loop scope, source locations, and code/comment separation across the parser matrix. JavaScript/TypeScript, Python, Rust, and Go add bounded import/binding provenance and fixed-point summaries for uniquely named local wrappers. Dynamic imports, reflection, macros, overload/type resolution, and runtime dispatch remain unresolved. Files with syntax errors receive `FG-PARSE-001` and no structural claims.
 
-Unsupported languages receive exact duplicate-block checks only; standalone SQL files also receive the `SELECT *` check. ForgeGuard deliberately reports evidence rather than pretending to prove whole-program complexity or runtime cost.
+Parser-backed function scopes also receive alpha-renamed Type-2 clone evidence; unsupported languages retain exact duplicate-block checks. Standalone SQL files receive the `SELECT *` check. ForgeGuard deliberately reports evidence rather than pretending to prove whole-program complexity or runtime cost.
 
 Source walking honors Git ignore files and excludes generated or dependency directories. Files larger than the configured limit are skipped.
 
 ## Gate policy
 
 - Required command failures always block.
-- Guard mode blocks error-level findings.
-- Strict mode blocks warning- and error-level findings.
+- Default mode blocks only explicitly configured static rules.
+- Strict config v2 blocks warning- and error-level findings; config v1 retains error-only compatibility until migration.
 - Lite mode reports static findings without blocking.
+- Per-rule `enabled`, `severity`, and `block` overrides apply before gate status.
 - Each configured command has a timeout; timeout is a failed check.
 - Duplicate rule/path/line findings collapse before rendering.
 
@@ -65,4 +66,4 @@ Source walking honors Git ignore files and excludes generated or dependency dire
 
 ## Extension direction
 
-Future packs should implement a stable rule trait and produce the same `Finding` model. Planned work includes SARIF output, deeper data-flow rules, MCP schema verification, and query-plan capture.
+Rule metadata has one registry and every finding carries confidence plus effective blocking state. SARIF 2.1.0 maps the same report model to code-scanning results. Future work includes compiler-backed type/data-flow packs, MCP schema verification, query-plan capture, SBOM, artifact signing, and provenance attestations.

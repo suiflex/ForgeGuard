@@ -9,7 +9,10 @@ use serde::{Deserialize, Serialize};
 use crate::{
     config::{ForgeGuardConfig, CONFIG_FILE},
     init::{
-        ANTIGRAVITY_HOOK_COMMAND, CLAUDE_HOOK_COMMAND, CODEX_HOOK_COMMAND, CURSOR_HOOK_COMMAND,
+        ANTIGRAVITY_CONTEXT_HOOK_COMMAND, ANTIGRAVITY_HOOK_COMMAND, ANTIGRAVITY_SCOPE_HOOK_COMMAND,
+        CLAUDE_CONTEXT_HOOK_COMMAND, CLAUDE_HOOK_COMMAND, CLAUDE_SCOPE_HOOK_COMMAND,
+        CODEX_CONTEXT_HOOK_COMMAND, CODEX_HOOK_COMMAND, CODEX_SCOPE_HOOK_COMMAND,
+        CURSOR_CONTEXT_HOOK_COMMAND, CURSOR_HOOK_COMMAND, CURSOR_SCOPE_HOOK_COMMAND,
         LEGACY_SKILL_NAMES,
     },
 };
@@ -89,33 +92,49 @@ fn hook_statuses(root: &Path) -> Vec<HookStatus> {
         (
             "codex",
             ".codex/hooks.json",
-            CODEX_HOOK_COMMAND,
+            [
+                CODEX_HOOK_COMMAND,
+                CODEX_CONTEXT_HOOK_COMMAND,
+                CODEX_SCOPE_HOOK_COMMAND,
+            ],
             shared_skill && root.join("AGENTS.md").is_file(),
         ),
         (
             "claude",
             ".claude/settings.json",
-            CLAUDE_HOOK_COMMAND,
+            [
+                CLAUDE_HOOK_COMMAND,
+                CLAUDE_CONTEXT_HOOK_COMMAND,
+                CLAUDE_SCOPE_HOOK_COMMAND,
+            ],
             root.join(".claude/skills/forgeguard-engineering/SKILL.md")
                 .is_file(),
         ),
         (
             "cursor",
             ".cursor/hooks.json",
-            CURSOR_HOOK_COMMAND,
+            [
+                CURSOR_HOOK_COMMAND,
+                CURSOR_CONTEXT_HOOK_COMMAND,
+                CURSOR_SCOPE_HOOK_COMMAND,
+            ],
             shared_skill && root.join(".cursor/rules/forgeguard.mdc").is_file(),
         ),
         (
             "antigravity",
             ".agents/hooks.json",
-            ANTIGRAVITY_HOOK_COMMAND,
+            [
+                ANTIGRAVITY_HOOK_COMMAND,
+                ANTIGRAVITY_CONTEXT_HOOK_COMMAND,
+                ANTIGRAVITY_SCOPE_HOOK_COMMAND,
+            ],
             shared_skill && root.join(".agents/rules/forgeguard.md").is_file(),
         ),
     ]
     .into_iter()
-    .map(|(agent, relative, command, installed)| {
+    .map(|(agent, relative, commands, installed)| {
         let path = root.join(relative);
-        let configured = fs_contains(&path, command);
+        let configured = commands.iter().all(|command| fs_contains(&path, command));
         HookStatus {
             agent: agent.to_owned(),
             installed,

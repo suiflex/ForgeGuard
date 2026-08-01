@@ -13,6 +13,7 @@ Rules, skills, hooks, and configured repository commands are language-agnostic. 
 request
   → project detection
   → compact rule + conditional skill
+  → session-scoped objective and path prefixes
   → implementation cycle
   → Stop hook
   → changed-source scanning
@@ -22,7 +23,7 @@ request
   → silent pass or bounded agent feedback
 ```
 
-Full reports stay local under `.forgeguard/reports/`; hook cache lives under `.forgeguard/cache/`. Both paths are excluded from worktree fingerprints. Cache lookup is `O(1)` after an `O(total changed bytes)` streaming fingerprint and prevents unchanged gates from rerunning.
+Full reports stay local under `.forgeguard/reports/`; per-session task and hook state live under `.forgeguard/cache/`. Both paths are excluded from worktree fingerprints. Cache lookup is `O(1)` after an `O(total changed bytes)` streaming fingerprint and prevents unchanged gates from rerunning.
 
 ## Token contract
 
@@ -52,8 +53,13 @@ Source walking honors Git ignore files and excludes generated or dependency dire
 
 - Hooks merge into existing JSON without replacing unrelated settings.
 - Global hooks pass silently outside initialized repositories.
-- Claude returns `decision: block`; Cursor returns `followup_message`; Codex surfaces a deterministic `systemMessage`; Antigravity returns `decision: continue`.
-- Repeated blocked stops with an unchanged fingerprint pass once to prevent infinite loops.
+- Claude and Codex return `decision: block`; Cursor returns `followup_message`; Antigravity returns `decision: continue`.
+- Session start/resume/compaction hooks restore the active objective where the host protocol supports context injection; Antigravity injects it on the first model invocation of an execution.
+- Pre-tool hooks warn when an edit path falls outside explicitly declared repository-relative prefixes. ForgeGuard never infers scope from prompt text.
+- Blocked stops use per-session retry and no-progress limits. Exhaustion stops with an explicit blocker instead of claiming completion or looping forever.
+- Default-on auto-poke returns the host agent to incomplete todos, low-confidence evidence, or fixed TODO/test/review/contract/final-verification phases. The same Stop-hook protocol works in headless mode where the host executes lifecycle hooks; each continuation is a new model request, and the hard limit is five. Configuration can explicitly opt out.
+- Hill-climbability is computed without an LLM from five explicit goal-contract fields: metric, baseline, target, guardrail, and verification. Missing fields trigger reframing instead of speculative prose scoring.
+- Deterministic focus state uses no LLM calls. Semantic evaluation is opt-in and delegated to native host goal mode; executed checks remain authoritative.
 - Agent hook trust remains controlled by each host application.
 - OpenCode uses the shared `AGENTS.md` and Agent Skill standards. Its current lifecycle cannot reliably prevent the loop from stopping, so ForgeGuard does not install a misleading pseudo-blocking hook.
 

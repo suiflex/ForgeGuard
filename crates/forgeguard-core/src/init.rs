@@ -17,6 +17,15 @@ pub(crate) const CODEX_HOOK_COMMAND: &str = "forgeguard hook stop --agent codex"
 pub(crate) const CLAUDE_HOOK_COMMAND: &str = "forgeguard hook stop --agent claude";
 pub(crate) const CURSOR_HOOK_COMMAND: &str = "forgeguard hook stop --agent cursor";
 pub(crate) const ANTIGRAVITY_HOOK_COMMAND: &str = "forgeguard hook stop --agent antigravity";
+pub(crate) const CODEX_CONTEXT_HOOK_COMMAND: &str = "forgeguard hook context --agent codex";
+pub(crate) const CLAUDE_CONTEXT_HOOK_COMMAND: &str = "forgeguard hook context --agent claude";
+pub(crate) const CURSOR_CONTEXT_HOOK_COMMAND: &str = "forgeguard hook context --agent cursor";
+pub(crate) const ANTIGRAVITY_CONTEXT_HOOK_COMMAND: &str =
+    "forgeguard hook context --agent antigravity";
+pub(crate) const CODEX_SCOPE_HOOK_COMMAND: &str = "forgeguard hook scope --agent codex";
+pub(crate) const CLAUDE_SCOPE_HOOK_COMMAND: &str = "forgeguard hook scope --agent claude";
+pub(crate) const CURSOR_SCOPE_HOOK_COMMAND: &str = "forgeguard hook scope --agent cursor";
+pub(crate) const ANTIGRAVITY_SCOPE_HOOK_COMMAND: &str = "forgeguard hook scope --agent antigravity";
 
 const SKILL_ASSETS: &[(&str, &str)] = &[
     (
@@ -329,11 +338,30 @@ fn install_codex(
         written,
         skipped,
     )?;
-    install_grouped_stop_hook(
+    install_grouped_hook(
         root,
         &root.join(".codex/hooks.json"),
+        "Stop",
+        None,
         CODEX_HOOK_COMMAND,
-        true,
+        written,
+        skipped,
+    )?;
+    install_grouped_hook(
+        root,
+        &root.join(".codex/hooks.json"),
+        "SessionStart",
+        Some("startup|resume|compact"),
+        CODEX_CONTEXT_HOOK_COMMAND,
+        written,
+        skipped,
+    )?;
+    install_grouped_hook(
+        root,
+        &root.join(".codex/hooks.json"),
+        "PreToolUse",
+        Some("apply_patch|Edit|Write"),
+        CODEX_SCOPE_HOOK_COMMAND,
         written,
         skipped,
     )
@@ -361,11 +389,30 @@ fn install_claude(
         written,
         skipped,
     )?;
-    install_grouped_stop_hook(
+    install_grouped_hook(
         root,
         &root.join(".claude/settings.json"),
+        "Stop",
+        None,
         CLAUDE_HOOK_COMMAND,
-        false,
+        written,
+        skipped,
+    )?;
+    install_grouped_hook(
+        root,
+        &root.join(".claude/settings.json"),
+        "SessionStart",
+        Some("startup|resume|compact"),
+        CLAUDE_CONTEXT_HOOK_COMMAND,
+        written,
+        skipped,
+    )?;
+    install_grouped_hook(
+        root,
+        &root.join(".claude/settings.json"),
+        "PreToolUse",
+        Some("Edit|Write|MultiEdit|NotebookEdit"),
+        CLAUDE_SCOPE_HOOK_COMMAND,
         written,
         skipped,
     )
@@ -390,7 +437,34 @@ fn install_cursor(
         written,
         skipped,
     )?;
-    install_cursor_stop_hook(root, &root.join(".cursor/hooks.json"), written, skipped)
+    let path = root.join(".cursor/hooks.json");
+    install_cursor_hook(
+        root,
+        &path,
+        "stop",
+        None,
+        CURSOR_HOOK_COMMAND,
+        written,
+        skipped,
+    )?;
+    install_cursor_hook(
+        root,
+        &path,
+        "sessionStart",
+        None,
+        CURSOR_CONTEXT_HOOK_COMMAND,
+        written,
+        skipped,
+    )?;
+    install_cursor_hook(
+        root,
+        &path,
+        "preToolUse",
+        Some("Write|StrReplace|Delete|ApplyPatch"),
+        CURSOR_SCOPE_HOOK_COMMAND,
+        written,
+        skipped,
+    )
 }
 
 fn install_opencode(
@@ -435,7 +509,30 @@ fn install_antigravity(
     };
     write_file(root, &policy_path, AGENTS_TEMPLATE, force, written, skipped)?;
     install_skill(root, skill_directory, force, written, skipped)?;
-    install_antigravity_stop_hook(root, &hook_path, written, skipped)
+    install_antigravity_simple_hook(
+        root,
+        &hook_path,
+        "Stop",
+        ANTIGRAVITY_HOOK_COMMAND,
+        written,
+        skipped,
+    )?;
+    install_antigravity_simple_hook(
+        root,
+        &hook_path,
+        "PreInvocation",
+        ANTIGRAVITY_CONTEXT_HOOK_COMMAND,
+        written,
+        skipped,
+    )?;
+    install_antigravity_tool_hook(
+        root,
+        &hook_path,
+        "write_to_file|replace_file_content|multi_replace_file_content",
+        ANTIGRAVITY_SCOPE_HOOK_COMMAND,
+        written,
+        skipped,
+    )
 }
 
 fn install_skill(
@@ -475,11 +572,12 @@ fn remove_obsolete_skill_assets(root: &Path, directory: &str) -> Result<()> {
     Ok(())
 }
 
-fn install_grouped_stop_hook(
+fn install_grouped_hook(
     root: &Path,
     path: &Path,
+    event: &str,
+    matcher: Option<&str>,
     command: &str,
-    codex: bool,
     written: &mut Vec<String>,
     skipped: &mut Vec<String>,
 ) -> Result<()> {
@@ -489,37 +587,30 @@ fn install_grouped_stop_hook(
         return Ok(());
     }
     let hooks = object_field(&mut document, "hooks", path)?;
-    let stop = array_field(hooks, "Stop", path)?;
-    let handler = if codex {
-        json!({
-            "hooks": [{
-                "type": "command",
-                "command": command,
-                "timeout": 600,
-                "statusMessage": "ForgeGuard verifying changed code"
-            }]
-        })
-    } else {
-        json!({
-            "hooks": [{
-                "type": "command",
-                "command": command,
-                "timeout": 600
-            }]
-        })
-    };
-    stop.push(handler);
+    let command_hook = json!({
+        "type": "command",
+        "command": command,
+        "timeout": if event == "Stop" { 600 } else { 5 }
+    });
+    let mut handler = json!({"hooks": [command_hook]});
+    if let Some(matcher) = matcher {
+        handler["matcher"] = json!(matcher);
+    }
+    array_field(hooks, event, path)?.push(handler);
     write_json_document(root, path, &document, written)
 }
 
-fn install_cursor_stop_hook(
+fn install_cursor_hook(
     root: &Path,
     path: &Path,
+    event: &str,
+    matcher: Option<&str>,
+    command: &str,
     written: &mut Vec<String>,
     skipped: &mut Vec<String>,
 ) -> Result<()> {
     let mut document = read_json_object(path)?;
-    if contains_string(&document, CURSOR_HOOK_COMMAND) {
+    if contains_string(&document, command) {
         record_path(root, path, skipped);
         return Ok(());
     }
@@ -529,21 +620,27 @@ fn install_cursor_stop_hook(
         .entry("version")
         .or_insert(json!(1));
     let hooks = object_field(&mut document, "hooks", path)?;
-    array_field(hooks, "stop", path)?.push(json!({
-        "command": CURSOR_HOOK_COMMAND,
-        "timeout": 600
-    }));
+    let mut handler = json!({
+        "command": command,
+        "timeout": if event == "stop" { 600 } else { 5 }
+    });
+    if let Some(matcher) = matcher {
+        handler["matcher"] = json!(matcher);
+    }
+    array_field(hooks, event, path)?.push(handler);
     write_json_document(root, path, &document, written)
 }
 
-fn install_antigravity_stop_hook(
+fn install_antigravity_simple_hook(
     root: &Path,
     path: &Path,
+    event: &str,
+    command: &str,
     written: &mut Vec<String>,
     skipped: &mut Vec<String>,
 ) -> Result<()> {
     let mut document = read_json_object(path)?;
-    if contains_string(&document, ANTIGRAVITY_HOOK_COMMAND) {
+    if contains_string(&document, command) {
         record_path(root, path, skipped);
         return Ok(());
     }
@@ -557,10 +654,44 @@ fn install_antigravity_stop_hook(
             path.display()
         )
     })?;
-    array_field(hook, "Stop", path)?.push(json!({
+    array_field(hook, event, path)?.push(json!({
         "type": "command",
-        "command": ANTIGRAVITY_HOOK_COMMAND,
-        "timeout": 600
+        "command": command,
+        "timeout": if event == "Stop" { 600 } else { 5 }
+    }));
+    write_json_document(root, path, &document, written)
+}
+
+fn install_antigravity_tool_hook(
+    root: &Path,
+    path: &Path,
+    matcher: &str,
+    command: &str,
+    written: &mut Vec<String>,
+    skipped: &mut Vec<String>,
+) -> Result<()> {
+    let mut document = read_json_object(path)?;
+    if contains_string(&document, command) {
+        record_path(root, path, skipped);
+        return Ok(());
+    }
+    let root_object = document.as_object_mut().expect("validated JSON object");
+    let hook = root_object
+        .entry("forgeguard-quality-gate")
+        .or_insert_with(|| json!({}));
+    let hook = hook.as_object_mut().with_context(|| {
+        format!(
+            "expected `forgeguard-quality-gate` to be an object in {}",
+            path.display()
+        )
+    })?;
+    array_field(hook, "PreToolUse", path)?.push(json!({
+        "matcher": matcher,
+        "hooks": [{
+            "type": "command",
+            "command": command,
+            "timeout": 5
+        }]
     }));
     write_json_document(root, path, &document, written)
 }

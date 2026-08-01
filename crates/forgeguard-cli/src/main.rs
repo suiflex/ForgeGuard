@@ -9,12 +9,15 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use forgeguard_core::{
     config::{ForgeGuardConfig, CONFIG_FILE},
-    create_baseline, detect_project, evaluate_stop_hook,
+    create_baseline, detect_project, evaluate_context_hook, evaluate_scope_hook,
+    evaluate_stop_hook,
     git::changed_files,
-    initialize_global, initialize_project, render_hook_decision,
+    initialize_global, initialize_project, mark_task_ready_with_confidence, render_context_hook,
+    render_hook_decision, render_scope_warning,
     report::{render_detection, render_doctor, render_gate, render_gate_compact},
-    run_doctor, run_gate, AgentTarget, GateOptions, GateReport, GateStatus, GuardMode, HookAgent,
-    HookDecision, InitOptions, BASELINE_FILE,
+    run_doctor, run_gate, start_task_with_contract, task_state, update_task_todos, AgentTarget,
+    GateOptions, GateReport, GateStatus, GoalContract, GuardMode, HookAgent, HookDecision,
+    InitOptions, BASELINE_FILE,
 };
 
 #[derive(Debug, Parser)]
@@ -97,6 +100,11 @@ enum Commands {
         #[command(subcommand)]
         command: HookCommands,
     },
+    /// Track a session objective, scope, and evidence for bounded agent work.
+    Task {
+        #[command(subcommand)]
+        command: Box<TaskCommands>,
+    },
     /// Check for a newer release (checks only; installs nothing).
     ///
     /// Only checks and prints a notice; it installs nothing. To upgrade, re-run
@@ -136,6 +144,84 @@ enum HookCommands {
     Stop {
         #[arg(long, value_enum)]
         agent: HookAgentArg,
+    },
+    /// Inject the active objective when a session starts, resumes, or compacts.
+    Context {
+        #[arg(long, value_enum)]
+        agent: HookAgentArg,
+    },
+    /// Warn when a file edit falls outside the declared task path prefixes.
+    Scope {
+        #[arg(long, value_enum)]
+        agent: HookAgentArg,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum TaskCommands {
+    /// Register the exact objective before a non-trivial code change.
+    Start {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        objective: String,
+        /// Repository-relative path prefix. Repeat for multiple scopes.
+        #[arg(long = "scope")]
+        scopes: Vec<String>,
+        /// Ask the host's native goal evaluator to track semantic completion.
+        #[arg(long)]
+        semantic: bool,
+        /// Progress metric, such as p95 latency or failing regression count.
+        #[arg(long)]
+        metric: Option<String>,
+        /// Current measured state.
+        #[arg(long)]
+        baseline: Option<String>,
+        /// Verifiable target state.
+        #[arg(long)]
+        target: Option<String>,
+        /// Constraint that must not regress. Repeat for multiple guardrails.
+        #[arg(long = "guardrail")]
+        guardrails: Vec<String>,
+        /// Exact verification method. Repeat for multiple checks.
+        #[arg(long = "verification")]
+        verifications: Vec<String>,
+        /// Verifiable work item. Repeat for multiple todos.
+        #[arg(long = "todo")]
+        todos: Vec<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Mark implementation ready for ForgeGuard's deterministic completion gate.
+    Ready {
+        #[arg(long)]
+        session: String,
+        /// Exact executed check or tool result. Repeat for multiple evidence items.
+        #[arg(long = "evidence")]
+        evidence: Vec<String>,
+        /// Model-reported confidence; tracked but never replaces evidence or gates.
+        #[arg(long)]
+        confidence: Option<u8>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Add todos or mark 1-based todo indexes complete.
+    Todo {
+        #[arg(long)]
+        session: String,
+        #[arg(long = "add")]
+        additions: Vec<String>,
+        #[arg(long = "done")]
+        completed: Vec<usize>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the current session task state.
+    Status {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -329,6 +415,13 @@ fn execute() -> Result<ExitCode> {
         Commands::Hook {
             command: HookCommands::Stop { agent },
         } => execute_stop_hook(&root, agent.into()),
+        Commands::Hook {
+            command: HookCommands::Context { agent },
+        } => execute_context_hook(&root, agent.into()),
+        Commands::Hook {
+            command: HookCommands::Scope { agent },
+        } => execute_scope_hook(&root, agent.into()),
+        Commands::Task { command } => execute_task(&root, *command),
         Commands::Update => {
             let home = home_directory()?;
             match forgeguard_core::update::refresh(&home, true) {
@@ -471,10 +564,103 @@ fn execute_stop_hook(root: &Path, agent: HookAgent) -> Result<ExitCode> {
             HookDecision::Block(append_update_notice(reason, home.as_deref()))
         }
         HookDecision::Pass => HookDecision::Pass,
+        HookDecision::Stop(reason) => HookDecision::Stop(reason),
     };
     let output = render_hook_decision(agent, &decision);
     if !output.is_empty() {
         println!("{output}");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn execute_context_hook(root: &Path, agent: HookAgent) -> Result<ExitCode> {
+    let mut input = String::new();
+    io::stdin()
+        .read_to_string(&mut input)
+        .context("failed to read hook input")?;
+    if let Some(context) = evaluate_context_hook(root, &input, agent)? {
+        println!("{}", render_context_hook(agent, &input, &context));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn execute_scope_hook(root: &Path, agent: HookAgent) -> Result<ExitCode> {
+    let mut input = String::new();
+    io::stdin()
+        .read_to_string(&mut input)
+        .context("failed to read hook input")?;
+    if let Some(warning) = evaluate_scope_hook(root, &input)? {
+        println!("{}", render_scope_warning(agent, &warning));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn execute_task(root: &Path, command: TaskCommands) -> Result<ExitCode> {
+    let (task, json) = match command {
+        TaskCommands::Start {
+            session,
+            objective,
+            scopes,
+            semantic,
+            metric,
+            baseline,
+            target,
+            guardrails,
+            verifications,
+            todos,
+            json,
+        } => (
+            start_task_with_contract(
+                root,
+                &session,
+                &objective,
+                &scopes,
+                semantic,
+                GoalContract {
+                    metric,
+                    baseline,
+                    target,
+                    guardrails,
+                    verifications,
+                },
+                &todos,
+            )?,
+            json,
+        ),
+        TaskCommands::Ready {
+            session,
+            evidence,
+            confidence,
+            json,
+        } => (
+            mark_task_ready_with_confidence(root, &session, &evidence, confidence)?,
+            json,
+        ),
+        TaskCommands::Todo {
+            session,
+            additions,
+            completed,
+            json,
+        } => (
+            update_task_todos(root, &session, &additions, &completed)?,
+            json,
+        ),
+        TaskCommands::Status { session, json } => {
+            let task = task_state(root, &session)?
+                .with_context(|| format!("no ForgeGuard task found for session {session}"))?;
+            (task, json)
+        }
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&task)?);
+    } else {
+        println!(
+            "ForgeGuard task {}: {}",
+            task.session_id,
+            serde_json::to_value(&task)?["status"]
+                .as_str()
+                .unwrap_or("unknown")
+        );
     }
     Ok(ExitCode::SUCCESS)
 }

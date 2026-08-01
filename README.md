@@ -43,8 +43,10 @@ ForgeGuard is designed not to drain user context or model limits:
 
 - The hook runs a local Rust binary and repository commands; ForgeGuard itself makes no LLM or external API call.
 - Always-on policy stays compact; detailed backend, frontend, mobile, database, algorithm, testing, and AI references load only when relevant.
-- Passing hooks add no model context in Codex/Claude; Cursor and Antigravity receive only their required minimal protocol response.
+- Passing completion hooks add no model context in Codex/Claude; objective reinjection caps objective text at 300 characters, and scope feedback appears only for an explicit out-of-scope path.
+- Antigravity injects focus context only on the first model invocation of an execution.
 - Blocking feedback is deduplicated and capped at 2,000 characters and five findings.
+- Auto-poke is default-on and creates one host request per continuation; the generated limit is three and the hard cap is five.
 - Full evidence stays local in `.forgeguard/reports/latest.json`.
 - Unchanged worktrees use a local fingerprint cache instead of rerunning the gate.
 
@@ -61,6 +63,7 @@ A blocked gate may cause the host agent to use another turn to fix real failures
 - OpenCode `AGENTS.md` plus shared project skills.
 - Antigravity rule, shared project skill, and native `Stop` hook.
 - Token-efficient `Stop` hooks: silent pass, bounded failure feedback, diff cache, and local full report.
+- Session-scoped objective, todo, confidence, hill-climbability, auto-poke, resume, and scope-drift state.
 - One `forgeguard-engineering` skill with conditional clean-code, algorithm, backend, frontend, mobile, database, AI, and testing references.
 - Static rules for nested iteration, repeated linear lookup, sorting in loops, database I/O in loops, external requests in loops, unbounded fan-out, `SELECT *`, and potential duplicated blocks.
 - Automatic formatter, linter, type-check, test, and build command discovery.
@@ -278,6 +281,15 @@ include_tests = false
 extra_excludes = ["generated/"]
 duplicate_block_lines = 6
 
+[focus]
+enabled = true
+max_retries = 3
+no_progress_limit = 2
+auto_poke = true
+max_auto_pokes = 3
+min_confidence = 80
+min_hill_climbability = 80
+
 [[commands]]
 name = "lint"
 command = "pnpm lint"
@@ -301,6 +313,22 @@ ForgeGuard supports three operating modes:
 - `strict`: strong guard mode. Failed required commands and error-level deterministic findings block.
 
 Older configs with `mode = "guard"` still load as `strict` for compatibility.
+
+Focus state and scope checks are local and make no LLM calls. `max_retries` bounds corrective turns; `no_progress_limit` stops a session that produces no repository or task-state progress. `auto_poke` is enabled automatically by `forgeguard init`; each continuation creates a new host request and consumes model tokens, so `max_auto_pokes` defaults to three and has a hard cap of five. Set `auto_poke = false` only when manually opting out. Pending todos, confidence below `min_confidence`, or goal-contract completeness below `min_hill_climbability` keep the task active. Hill-climbability is a deterministic 0–100 completeness score: metric, baseline, target, guardrail, and verification contribute 20 points each. ForgeGuard does not guess these fields from prose. `forgeguard task start --semantic` only asks a supported host to use its native goal evaluator.
+
+See [Focus, auto-poke, and hill-climbability](docs/FOCUS.md) for the lifecycle, headless behavior, token bounds, upgrade path, and examples.
+
+Example measurable task:
+
+```bash
+forgeguard task start --session "$SESSION" \
+  --objective "Reduce /search latency without regressions" \
+  --metric "p95 latency /search" --baseline "900 ms" --target "below 300 ms" \
+  --guardrail "error rate does not increase" --verification "regression tests pass" \
+  --todo "measure baseline" --todo "optimize endpoint"
+forgeguard task todo --session "$SESSION" --done 1
+forgeguard task ready --session "$SESSION" --confidence 90 --evidence "benchmark: p95 284 ms"
+```
 
 Set project mode:
 
@@ -336,7 +364,11 @@ When run in a terminal without an explicit mode, `forgeguard mode` opens the sam
 | `forgeguard gate` | Run static rules and configured quality commands. |
 | `forgeguard review` | Scan Git-changed files without running commands. |
 | `forgeguard baseline create` | Record current static findings so gates report only new findings. |
-| `forgeguard hook stop` | Internal token-efficient lifecycle adapter for supported agents. |
+| `forgeguard task start` | Register objective, goal metrics, todos, and optional scope prefixes. |
+| `forgeguard task todo` | Add todos or mark 1-based todo indexes complete. |
+| `forgeguard task ready` | Submit exact evidence and optional model confidence before the completion gate. |
+| `forgeguard task status` | Inspect session-scoped objective state. |
+| `forgeguard hook stop/context/scope` | Internal lifecycle adapters for completion, objective restoration, and scope warnings. |
 
 ## Agent contract
 
@@ -346,6 +378,8 @@ Developer
 Claude Code / Codex / Cursor / OpenCode / Antigravity
   ↓
 ForgeGuard compact rules + conditional skill + Stop hook
+  ↓
+session objective + goal metric + todo state + confidence history + executed evidence
   ↓
 Repository tools
   ↓

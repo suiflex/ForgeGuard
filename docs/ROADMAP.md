@@ -15,21 +15,19 @@
 - Conservative N+1 and query-in-loop detection.
 - Consolidated cross-agent engineering skill and current Codex skill layout.
 
-## Next
-
-- Function-level data-flow and complexity analysis.
-- SARIF output and baseline support.
-
-## 0.3 — Agent enforcement
+## 0.3–0.7 — Agent enforcement and persistence
 
 - Claude Code, Codex, Cursor, and Antigravity Stop hooks.
 - Silent-success and bounded-failure token protocol.
 - Changed-worktree cache and local full reports.
 - Command timeout and hook installation diagnostics.
+- Session-scoped objectives, todo/confidence state, deterministic hill-climbability, bounded retry/no-progress handling, context restoration, declared-scope warnings, and default-on auto-poke verification phases.
 - Cross-platform release binaries and checksum-verifying installers.
 
-## 0.4 — Database and AI packs
+## Next — Database and AI packs
 
+- Function-level data-flow and complexity analysis.
+- SARIF output.
 - MCP schema verification.
 - Query-plan evidence collection.
 - AI tool schema, agent-loop, RAG, token, and evaluation gates.

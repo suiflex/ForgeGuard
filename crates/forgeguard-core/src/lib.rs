@@ -14,12 +14,15 @@ pub mod scanner;
 pub mod update;
 
 pub use baseline::{create_baseline, Baseline, BaselineEntry, BASELINE_FILE};
-pub use config::{CommandConfig, ForgeGuardConfig, GuardMode};
+pub use config::{CommandConfig, FocusConfig, ForgeGuardConfig, GuardMode};
 pub use detector::{detect_project, ProjectDetection};
 pub use doctor::{run_doctor, DoctorReport};
 pub use gate::{run_gate, GateOptions};
 pub use hook::{
-    evaluate_stop_hook, ignore_forgeguard_artifacts, render_hook_decision, HookAgent, HookDecision,
+    evaluate_context_hook, evaluate_scope_hook, evaluate_stop_hook, ignore_forgeguard_artifacts,
+    mark_task_ready, mark_task_ready_with_confidence, render_context_hook, render_hook_decision,
+    render_scope_warning, start_task, start_task_with_contract, task_state, update_task_todos,
+    GoalContract, HookAgent, HookDecision, TaskState, TaskStatus, TaskTodo,
 };
 pub use init::{
     initialize_global, initialize_project, AgentTarget, GlobalInitReport, InitOptions, InitReport,

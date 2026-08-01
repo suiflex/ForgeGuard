@@ -74,6 +74,38 @@ pub struct CommandConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FocusConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_focus_max_retries")]
+    pub max_retries: u32,
+    #[serde(default = "default_focus_no_progress_limit")]
+    pub no_progress_limit: u32,
+    #[serde(default = "default_true")]
+    pub auto_poke: bool,
+    #[serde(default = "default_focus_max_auto_pokes")]
+    pub max_auto_pokes: u32,
+    #[serde(default = "default_focus_min_confidence")]
+    pub min_confidence: u8,
+    #[serde(default = "default_focus_min_hill_climbability")]
+    pub min_hill_climbability: u8,
+}
+
+impl Default for FocusConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_retries: default_focus_max_retries(),
+            no_progress_limit: default_focus_no_progress_limit(),
+            auto_poke: true,
+            max_auto_pokes: default_focus_max_auto_pokes(),
+            min_confidence: default_focus_min_confidence(),
+            min_hill_climbability: default_focus_min_hill_climbability(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForgeGuardConfig {
     #[serde(default = "default_config_version")]
     pub version: u32,
@@ -84,6 +116,8 @@ pub struct ForgeGuardConfig {
     pub scan: ScanConfig,
     #[serde(default)]
     pub commands: Vec<CommandConfig>,
+    #[serde(default)]
+    pub focus: FocusConfig,
 }
 
 impl ForgeGuardConfig {
@@ -96,6 +130,7 @@ impl ForgeGuardConfig {
             },
             scan: ScanConfig::default(),
             commands,
+            focus: FocusConfig::default(),
         }
     }
 
@@ -150,4 +185,24 @@ fn default_duplicate_block_lines() -> usize {
 
 fn default_command_timeout_seconds() -> u64 {
     600
+}
+
+fn default_focus_max_retries() -> u32 {
+    3
+}
+
+fn default_focus_no_progress_limit() -> u32 {
+    2
+}
+
+fn default_focus_max_auto_pokes() -> u32 {
+    3
+}
+
+fn default_focus_min_confidence() -> u8 {
+    80
+}
+
+fn default_focus_min_hill_climbability() -> u8 {
+    80
 }

@@ -28,6 +28,13 @@ fn configuration_round_trips_through_toml() {
 fn new_configuration_defaults_to_default_mode() {
     let config = ForgeGuardConfig::new("example", Vec::new());
     assert_eq!(config.mode, GuardMode::Default);
+    assert!(config.focus.enabled);
+    assert_eq!(config.focus.max_retries, 3);
+    assert_eq!(config.focus.no_progress_limit, 2);
+    assert!(config.focus.auto_poke);
+    assert_eq!(config.focus.max_auto_pokes, 3);
+    assert_eq!(config.focus.min_confidence, 80);
+    assert_eq!(config.focus.min_hill_climbability, 80);
 }
 
 #[test]
@@ -54,6 +61,8 @@ duplicate_block_lines = 6
 
     let config = ForgeGuardConfig::load(directory.path()).expect("load legacy config");
     assert_eq!(config.mode, GuardMode::Strict);
+    assert!(config.focus.enabled);
+    assert!(config.focus.auto_poke);
 }
 
 #[test]

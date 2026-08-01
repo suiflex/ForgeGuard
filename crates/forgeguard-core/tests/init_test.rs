@@ -22,6 +22,12 @@ fn installs_configuration_for_all_supported_agents() {
     .expect("initialize project");
 
     assert!(directory.path().join(".forgeguard/config.toml").exists());
+    assert!(
+        forgeguard_core::ForgeGuardConfig::load(directory.path())
+            .expect("load initialized config")
+            .focus
+            .auto_poke
+    );
     assert!(directory.path().join("AGENTS.md").exists());
     assert!(directory.path().join("CLAUDE.md").exists());
     assert!(directory
@@ -72,6 +78,24 @@ fn installs_configuration_for_all_supported_agents() {
     assert!(algorithm_policy.contains("actual bottleneck before optimizing"));
     let doctor = forgeguard_core::run_doctor(directory.path(), None).expect("run doctor");
     assert!(doctor.hooks.iter().all(|hook| hook.configured));
+    let codex_hooks: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(directory.path().join(".codex/hooks.json")).expect("read Codex hooks"),
+    )
+    .expect("parse Codex hooks");
+    assert_eq!(
+        codex_hooks["hooks"]["Stop"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        codex_hooks["hooks"]["SessionStart"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        codex_hooks["hooks"]["PreToolUse"].as_array().map(Vec::len),
+        Some(1)
+    );
     assert!(!report.files_written.is_empty());
 }
 
@@ -188,6 +212,18 @@ fn hook_install_preserves_existing_settings_and_is_idempotent() {
     assert_eq!(
         source
             .matches("forgeguard hook stop --agent claude")
+            .count(),
+        1
+    );
+    assert_eq!(
+        source
+            .matches("forgeguard hook context --agent claude")
+            .count(),
+        1
+    );
+    assert_eq!(
+        source
+            .matches("forgeguard hook scope --agent claude")
             .count(),
         1
     );
@@ -333,6 +369,18 @@ fn antigravity_hook_merge_is_idempotent() {
     assert_eq!(
         source
             .matches("forgeguard hook stop --agent antigravity")
+            .count(),
+        1
+    );
+    assert_eq!(
+        source
+            .matches("forgeguard hook context --agent antigravity")
+            .count(),
+        1
+    );
+    assert_eq!(
+        source
+            .matches("forgeguard hook scope --agent antigravity")
             .count(),
         1
     );

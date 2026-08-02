@@ -12,14 +12,14 @@ jobs:
   msrv:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@788abdaa468b02b2d53a3d1d8fcac62dc9858f4a # 1.78.0
       - run: cargo check --locked --workspace
 
   quality:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@788abdaa468b02b2d53a3d1d8fcac62dc9858f4a # stable
         with:
           components: rustfmt, clippy
@@ -48,7 +48,7 @@ jobs:
   supply-chain:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@788abdaa468b02b2d53a3d1d8fcac62dc9858f4a # stable
       - run: cargo install --locked cargo-deny --version 0.20.2
       - run: cargo install --locked cargo-audit --version 0.22.2

@@ -3,8 +3,8 @@ use std::{fs, process::Command};
 use forgeguard_core::{
     evaluate_context_hook, evaluate_scope_hook, evaluate_stop_hook, mark_task_ready,
     mark_task_ready_with_confidence, render_hook_decision, start_task, start_task_with_contract,
-    task_state, update_task_todos, ForgeGuardConfig, GoalContract, HookAgent, HookDecision,
-    TaskStatus,
+    task_state, update_task_todos, CommandConfig, ForgeGuardConfig, GoalContract, GuardMode,
+    HookAgent, HookDecision, TaskStatus,
 };
 use tempfile::tempdir;
 
@@ -562,6 +562,75 @@ fn auto_gate_passes_for_repo_without_code() {
     let (decision, _) = evaluate_stop_hook(directory.path(), &input).expect("evaluate hook");
     assert_eq!(decision, HookDecision::Pass);
     assert!(!directory.path().join(".forgeguard").exists());
+}
+
+#[test]
+fn initialized_non_git_workspace_gates_each_nested_repository() {
+    let directory = tempdir().expect("temp directory");
+    let mut workspace_config = ForgeGuardConfig::new("workspace", Vec::new());
+    workspace_config.focus.enabled = false;
+    workspace_config
+        .save(directory.path())
+        .expect("save workspace config");
+
+    let service_a = directory.path().join("service-a");
+    let service_b = directory.path().join("service-b");
+    fs::create_dir_all(&service_a).expect("create service A");
+    fs::create_dir_all(&service_b).expect("create service B");
+    git_init(&service_a);
+    git_init(&service_b);
+    fs::write(service_a.join("service.ts"), "export const ready = true;\n")
+        .expect("write TypeScript service");
+    fs::write(service_b.join("main.rs"), "fn main() {}\n").expect("write Rust service");
+
+    ForgeGuardConfig::new(
+        "service-b",
+        vec![CommandConfig {
+            name: "test".to_owned(),
+            command: "test ! -f main.rs".to_owned(),
+            required: true,
+            enabled: true,
+            timeout_seconds: 10,
+        }],
+    )
+    .save(&service_b)
+    .expect("save service B config");
+
+    let input = format!(r#"{{"cwd":"{}"}}"#, directory.path().display());
+    let (decision, _) =
+        evaluate_stop_hook(directory.path(), &input).expect("evaluate workspace hook");
+
+    assert!(matches!(decision, HookDecision::Block(_)));
+    assert!(!service_a.join(".forgeguard/config.toml").exists());
+    assert!(service_a.join(".forgeguard/reports/latest.json").is_file());
+    assert!(service_b.join(".forgeguard/reports/latest.json").is_file());
+}
+
+#[test]
+fn zero_config_nested_repository_inherits_workspace_config_version() {
+    let directory = tempdir().expect("temp directory");
+    let mut workspace_config = ForgeGuardConfig::new("workspace", Vec::new());
+    workspace_config.version = 1;
+    workspace_config.mode = GuardMode::Strict;
+    workspace_config.focus.enabled = false;
+    workspace_config
+        .save(directory.path())
+        .expect("save workspace config");
+
+    let repository = directory.path().join("service");
+    fs::create_dir_all(&repository).expect("create service");
+    git_init(&repository);
+    fs::write(
+        repository.join("nested.ts"),
+        "for (const row of rows) { for (const value of row) { console.log(value); } }\n",
+    )
+    .expect("write warning-only source");
+
+    let input = format!(r#"{{"cwd":"{}"}}"#, directory.path().display());
+    let (decision, _) =
+        evaluate_stop_hook(directory.path(), &input).expect("evaluate workspace hook");
+
+    assert_eq!(decision, HookDecision::Pass);
 }
 
 fn git_init(root: &std::path::Path) {

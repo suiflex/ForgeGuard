@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     config::{ForgeGuardConfig, CONFIG_FILE},
+    git::repository_roots,
     init::{
         ANTIGRAVITY_CONTEXT_HOOK_COMMAND, ANTIGRAVITY_HOOK_COMMAND, ANTIGRAVITY_SCOPE_HOOK_COMMAND,
         CLAUDE_CONTEXT_HOOK_COMMAND, CLAUDE_HOOK_COMMAND, CLAUDE_SCOPE_HOOK_COMMAND,
@@ -45,7 +46,7 @@ pub struct HookStatus {
 
 pub fn run_doctor(root: &Path, config: Option<&ForgeGuardConfig>) -> Result<DoctorReport> {
     let configuration_found = root.join(CONFIG_FILE).exists();
-    let git_repository = root.join(".git").exists();
+    let git_repository = !repository_roots(root)?.is_empty();
     let mut tool_names = vec!["git".to_owned()];
     if let Some(config) = config {
         for command in &config.commands {

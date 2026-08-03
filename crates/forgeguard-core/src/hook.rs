@@ -12,7 +12,8 @@ use serde_json::{json, Value};
 use crate::{
     config::{FocusConfig, ForgeGuardConfig, GuardMode, CONFIG_FILE},
     detect_project,
-    git::{changed_files, worktree_fingerprint},
+    git::{changed_files, repository_roots, worktree_fingerprint},
+    model::GateSummary,
     report::{render_gate_compact, COMPACT_MAX_CHARS},
     run_gate, GateOptions, GateStatus,
 };
@@ -127,9 +128,13 @@ pub fn evaluate_stop_hook(fallback_root: &Path, input: &str) -> Result<(HookDeci
     let Some(root) = find_project_root(fallback_root, &payload) else {
         return Ok((HookDecision::Pass, false));
     };
+    let repositories = repository_roots(&root)?;
+    if repositories.is_empty() {
+        return Ok((HookDecision::Pass, false));
+    }
     let session = session_key(&payload);
     let mut task = read_task(&root, &session)?;
-    let worktree = worktree_fingerprint(&root)?;
+    let worktree = workspace_fingerprint(&root, &repositories)?;
     if worktree.is_none() {
         match task.as_ref().map(|task| task.status) {
             None | Some(TaskStatus::Completed | TaskStatus::Blocked) => {
@@ -201,14 +206,7 @@ pub fn evaluate_stop_hook(fallback_root: &Path, input: &str) -> Result<(HookDeci
             false,
         );
     }
-    let report = run_gate(
-        &root,
-        &config,
-        &GateOptions {
-            skip_commands: false,
-            paths: Some(changed_files(&root)?),
-        },
-    )?;
+    let report = run_workspace_gate(&root, &repositories, &config)?;
     write_json(&root.join(REPORT_FILE), &report)?;
     if report.status == GateStatus::Blocked {
         return bounded_block(
@@ -629,6 +627,116 @@ fn find_project_root(fallback_root: &Path, payload: &Value) -> Option<PathBuf> {
             .find(|path| path.join(".git").exists() || path.join(CONFIG_FILE).is_file())
             .map(Path::to_path_buf)
     })
+}
+
+fn workspace_fingerprint(workspace: &Path, repositories: &[PathBuf]) -> Result<Option<String>> {
+    if repositories == [workspace] {
+        return worktree_fingerprint(workspace);
+    }
+
+    let mut hasher = DefaultHasher::new();
+    let mut changed = false;
+    for repository in repositories {
+        let Some(fingerprint) = worktree_fingerprint(repository)? else {
+            continue;
+        };
+        changed = true;
+        hasher.write(
+            repository
+                .strip_prefix(workspace)
+                .unwrap_or(repository)
+                .to_string_lossy()
+                .as_bytes(),
+        );
+        hasher.write(fingerprint.as_bytes());
+    }
+    Ok(changed.then(|| format!("{:016x}", hasher.finish())))
+}
+
+fn run_workspace_gate(
+    workspace: &Path,
+    repositories: &[PathBuf],
+    workspace_config: &ForgeGuardConfig,
+) -> Result<crate::GateReport> {
+    if repositories == [workspace] {
+        return run_gate(
+            workspace,
+            workspace_config,
+            &GateOptions {
+                skip_commands: false,
+                paths: Some(changed_files(workspace)?),
+            },
+        );
+    }
+
+    let mut combined = crate::GateReport {
+        status: GateStatus::Passed,
+        findings: Vec::new(),
+        checks: Vec::new(),
+        summary: GateSummary {
+            errors: 0,
+            warnings: 0,
+            info: 0,
+            blocking_findings: 0,
+            findings_baselined: 0,
+            checks_passed: 0,
+            checks_failed: 0,
+        },
+    };
+    for repository in repositories {
+        if worktree_fingerprint(repository)?.is_none() {
+            continue;
+        }
+        let configured = repository.join(CONFIG_FILE).is_file();
+        let Some(mut config) = load_hook_config(repository)? else {
+            continue;
+        };
+        if !configured {
+            config.version = workspace_config.version;
+            config.mode = workspace_config.mode;
+            config.scan = workspace_config.scan.clone();
+            config.policies = workspace_config.policies.clone();
+            config.rules = workspace_config.rules.clone();
+        }
+        let report = run_gate(
+            repository,
+            &config,
+            &GateOptions {
+                skip_commands: false,
+                paths: Some(changed_files(repository)?),
+            },
+        )?;
+        write_json(&repository.join(REPORT_FILE), &report)?;
+        merge_report(
+            &mut combined,
+            report,
+            repository.strip_prefix(workspace).unwrap_or(repository),
+        );
+    }
+    Ok(combined)
+}
+
+fn merge_report(combined: &mut crate::GateReport, mut report: crate::GateReport, prefix: &Path) {
+    combined.status = match (combined.status, report.status) {
+        (GateStatus::Blocked, _) | (_, GateStatus::Blocked) => GateStatus::Blocked,
+        (GateStatus::Warning, _) | (_, GateStatus::Warning) => GateStatus::Warning,
+        _ => GateStatus::Passed,
+    };
+    for finding in &mut report.findings {
+        finding.path = prefix.join(&finding.path);
+    }
+    for check in &mut report.checks {
+        check.name = format!("{}: {}", prefix.display(), check.name);
+    }
+    combined.findings.extend(report.findings);
+    combined.checks.extend(report.checks);
+    combined.summary.errors += report.summary.errors;
+    combined.summary.warnings += report.summary.warnings;
+    combined.summary.info += report.summary.info;
+    combined.summary.blocking_findings += report.summary.blocking_findings;
+    combined.summary.findings_baselined += report.summary.findings_baselined;
+    combined.summary.checks_passed += report.summary.checks_passed;
+    combined.summary.checks_failed += report.summary.checks_failed;
 }
 
 fn compact_failure(report: &crate::GateReport) -> String {

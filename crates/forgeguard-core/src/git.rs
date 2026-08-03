@@ -1,12 +1,62 @@
 use std::{
-    fs::File,
+    fs::{self, File},
     hash::Hasher,
     io::Read,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Output},
 };
 
 use anyhow::{bail, Context, Result};
+
+pub fn repository_roots(root: &Path) -> Result<Vec<PathBuf>> {
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("failed to resolve workspace root {}", root.display()))?;
+    if root.join(".git").exists() {
+        return Ok(vec![root]);
+    }
+
+    let mut pending = vec![root];
+    let mut repositories = Vec::new();
+    // ponytail: scan directories once until Git roots; add configurable bounds only if discovery becomes measurable.
+    while let Some(directory) = pending.pop() {
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        // forgeguard: allow FG-ALG-001 -- each directory entry is visited once; repository trees are not traversed
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            if path.join(".git").exists() {
+                repositories.push(path);
+                continue;
+            }
+            if matches!(
+                entry.file_name().to_str(),
+                Some(
+                    ".git"
+                        | ".forgeguard"
+                        | "target"
+                        | "node_modules"
+                        | "vendor"
+                        | ".venv"
+                        | "venv"
+                        | "dist"
+                        | "build"
+                        | ".next"
+                )
+            ) {
+                continue;
+            }
+            pending.push(path);
+        }
+    }
+    repositories.sort();
+    Ok(repositories)
+}
 
 pub fn changed_files(root: &Path) -> Result<Vec<std::path::PathBuf>> {
     let output = status_output(root)?;

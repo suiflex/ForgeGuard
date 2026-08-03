@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fs, process::Command};
 
 use forgeguard_core::run_doctor;
 use tempfile::tempdir;
@@ -29,4 +29,21 @@ fn current_skill_layout_has_no_migration_warning() {
     let report = run_doctor(directory.path(), None).expect("run doctor");
 
     assert!(report.warnings.is_empty());
+}
+
+#[test]
+fn nested_repository_satisfies_workspace_git_check() {
+    let directory = tempdir().expect("temp directory");
+    let repository = directory.path().join("service");
+    fs::create_dir_all(&repository).expect("create repository");
+    let status = Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(&repository)
+        .status()
+        .expect("run git init");
+    assert!(status.success());
+
+    let report = run_doctor(directory.path(), None).expect("run doctor");
+
+    assert!(report.git_repository);
 }

@@ -51,11 +51,17 @@ fn blocked_hook_is_compact_cached_and_bounded() {
         r#"{{"cwd":"{}","stop_hook_active":true}}"#,
         directory.path().display()
     );
+    // Later agent turns, not duplicate hook entries: step past the replay window.
+    sleep_past_duplicate_window();
     let (decision, cache_hit) =
         evaluate_stop_hook(directory.path(), &repeated).expect("evaluate repeated hook");
-    assert!(matches!(decision, HookDecision::Stop(_)));
+    let HookDecision::Block(message) = decision else {
+        panic!("the second unchanged turn is still inside the retry budget");
+    };
+    assert!(message.contains("no-progress 1/2"));
     assert!(cache_hit);
 
+    sleep_past_duplicate_window();
     let antigravity_repeated = format!(
         r#"{{"workspacePaths":["{}"],"executionNum":2}}"#,
         directory.path().display()
@@ -565,40 +571,297 @@ fn task_contract_rejects_untrusted_paths_and_unsupported_evidence() {
 }
 
 #[test]
-fn auto_gate_reports_without_blocking_without_config_and_ignores_artifacts() {
+fn uninitialized_code_repository_is_never_hooked_or_written_to() {
     let directory = tempdir().expect("temp directory");
     git_init(directory.path());
-    // A pre-existing root .gitignore must be appended to, not clobbered.
     fs::write(directory.path().join(".gitignore"), "node_modules/\n").expect("write gitignore");
     fs::write(
         directory.path().join("service.ts"),
         "import { PrismaClient } from '@prisma/client';\nconst db = new PrismaClient();\nfor (const user of users) { await db.query('SELECT id FROM users WHERE id = 1'); }\n",
     )
     .expect("write source");
+    start_task(
+        directory.path(),
+        "session-uninitialized",
+        "Write documentation only",
+        &["docs".to_owned()],
+        false,
+    )
+    .expect("write stale task");
 
     let input = format!(
-        r#"{{"cwd":"{}","executionNum":1}}"#,
+        r#"{{"cwd":"{}","session_id":"session-uninitialized","executionNum":1,"tool_input":{{"file_path":"service.ts"}}}}"#,
         directory.path().display()
     );
     assert!(
         evaluate_context_hook(directory.path(), &input, HookAgent::Codex)
             .expect("evaluate context hook")
-            .is_some()
+            .is_none()
     );
+    assert!(evaluate_scope_hook(directory.path(), &input)
+        .expect("evaluate scope hook")
+        .is_none());
     let (decision, _) = evaluate_stop_hook(directory.path(), &input).expect("evaluate hook");
     assert_eq!(decision, HookDecision::Pass);
 
-    // No manual setup, yet artifacts are kept out of version control.
-    let marker = fs::read_to_string(directory.path().join(".forgeguard/.gitignore"))
-        .expect("read forgeguard gitignore");
-    assert_eq!(marker.trim(), "*");
+    // Without `forgeguard init` the hooks own nothing in the repository.
+    assert!(!directory.path().join(".forgeguard/config.toml").exists());
+    assert!(!directory.path().join(".forgeguard/.gitignore").exists());
+    assert!(!directory
+        .path()
+        .join(".forgeguard/reports/latest.json")
+        .exists());
     let root_ignore =
         fs::read_to_string(directory.path().join(".gitignore")).expect("read root gitignore");
-    assert!(root_ignore.contains("node_modules/"));
-    assert!(root_ignore
-        .lines()
-        .any(|line| line.trim().trim_end_matches('/') == ".forgeguard"));
-    assert!(!directory.path().join(".forgeguard/config.toml").exists());
+    assert_eq!(root_ignore, "node_modules/\n");
+}
+
+#[test]
+fn initialized_repository_activates_every_hook() {
+    let directory = tempdir().expect("temp directory");
+    git_init(directory.path());
+    let mut config = ForgeGuardConfig::new("sample", Vec::new());
+    config.mode = GuardMode::Strict;
+    config.focus.auto_poke = false;
+    config.save(directory.path()).expect("save config");
+    fs::write(
+        directory.path().join("service.ts"),
+        "import { PrismaClient } from '@prisma/client';\nconst db = new PrismaClient();\nfor (const user of users) { await db.query('SELECT id FROM users WHERE id = 1'); }\n",
+    )
+    .expect("write source");
+    start_task(
+        directory.path(),
+        "session-initialized",
+        "Change only source",
+        &["src".to_owned()],
+        false,
+    )
+    .expect("start task");
+
+    let input = format!(
+        r#"{{"cwd":"{}","session_id":"session-initialized","tool_input":{{"file_path":"service.ts"}}}}"#,
+        directory.path().display()
+    );
+    assert!(
+        evaluate_context_hook(directory.path(), &input, HookAgent::Codex)
+            .expect("evaluate context hook")
+            .expect("context")
+            .contains("Change only source")
+    );
+    assert!(evaluate_scope_hook(directory.path(), &input)
+        .expect("evaluate scope hook")
+        .expect("scope warning")
+        .contains("service.ts"));
+    let (decision, _) = evaluate_stop_hook(directory.path(), &input).expect("evaluate hook");
+    assert!(matches!(decision, HookDecision::Block(_)));
+    assert!(directory
+        .path()
+        .join(".forgeguard/reports/latest.json")
+        .is_file());
+}
+
+#[test]
+fn documentation_only_change_skips_configured_commands() {
+    let directory = tempdir().expect("temp directory");
+    git_init(directory.path());
+    let failing = CommandConfig {
+        name: "test".to_owned(),
+        command: "exit 1".to_owned(),
+        required: true,
+        enabled: true,
+        timeout_seconds: 10,
+    };
+    let mut config = ForgeGuardConfig::new("sample", vec![failing]);
+    config.focus.enabled = false;
+    config.save(directory.path()).expect("save config");
+    fs::write(
+        directory.path().join("service.ts"),
+        "export const value = 1;\n",
+    )
+    .expect("write source");
+    git_commit_all(directory.path());
+    fs::write(directory.path().join("guide.md"), "# guide\n").expect("write documentation");
+    let input = format!(
+        r#"{{"cwd":"{}","session_id":"session-docs"}}"#,
+        directory.path().display()
+    );
+
+    let (decision, _) = evaluate_stop_hook(directory.path(), &input).expect("documentation stop");
+    assert_eq!(decision, HookDecision::Pass);
+
+    // A removed source file changes build, lint, and test results even though
+    // the path no longer exists on disk.
+    fs::remove_file(directory.path().join("service.ts")).expect("remove source");
+    let (decision, _) = evaluate_stop_hook(directory.path(), &input).expect("removal stop");
+    let HookDecision::Block(message) = decision else {
+        panic!("a removed source file must run the configured commands");
+    };
+    assert!(message.contains("test failed"));
+
+    fs::write(
+        directory.path().join("service.ts"),
+        "export const value = 2;\n",
+    )
+    .expect("rewrite source");
+    let (decision, _) = evaluate_stop_hook(directory.path(), &input).expect("source stop");
+    let HookDecision::Block(message) = decision else {
+        panic!("a source change must run the configured commands");
+    };
+    assert!(message.contains("test failed"));
+}
+
+#[test]
+fn markdown_under_a_test_tree_is_a_fixture_and_still_runs_commands() {
+    let directory = tempdir().expect("temp directory");
+    git_init(directory.path());
+    let failing = CommandConfig {
+        name: "test".to_owned(),
+        command: "exit 1".to_owned(),
+        required: true,
+        enabled: true,
+        timeout_seconds: 10,
+    };
+    let mut config = ForgeGuardConfig::new("sample", vec![failing]);
+    config.focus.enabled = false;
+    config.save(directory.path()).expect("save config");
+    fs::create_dir_all(directory.path().join("tests/fixtures")).expect("create fixtures");
+    fs::write(
+        directory.path().join("tests/fixtures/expected.md"),
+        "# expected\n",
+    )
+    .expect("write fixture");
+    git_commit_all(directory.path());
+    fs::write(
+        directory.path().join("tests/fixtures/expected.md"),
+        "# expected output\n",
+    )
+    .expect("edit fixture");
+    let input = format!(
+        r#"{{"cwd":"{}","session_id":"session-fixture"}}"#,
+        directory.path().display()
+    );
+
+    let (decision, _) = evaluate_stop_hook(directory.path(), &input).expect("fixture stop");
+    let HookDecision::Block(message) = decision else {
+        panic!("a fixture change must run the configured commands");
+    };
+    assert!(message.contains("test failed"));
+}
+
+#[test]
+fn duplicate_hook_registration_does_not_consume_the_retry_budget() {
+    let directory = tempdir().expect("temp directory");
+    git_init(directory.path());
+    let mut config = ForgeGuardConfig::new("sample", Vec::new());
+    config.mode = GuardMode::Strict;
+    config.focus.auto_poke = false;
+    config.save(directory.path()).expect("save config");
+    fs::write(
+        directory.path().join("service.ts"),
+        "export const value = 1;\n",
+    )
+    .expect("write source");
+    let input = format!(
+        r#"{{"cwd":"{}","session_id":"session-duplicate"}}"#,
+        directory.path().display()
+    );
+
+    // A global and a project hook entry fire the same event back to back.
+    let (first, _) = evaluate_stop_hook(directory.path(), &input).expect("first registration");
+    let (second, cache_hit) =
+        evaluate_stop_hook(directory.path(), &input).expect("duplicate registration");
+    assert_eq!(first, second);
+    assert!(cache_hit);
+    assert!(matches!(second, HookDecision::Block(message) if message.contains("attempt 1/3")));
+}
+
+#[test]
+fn retry_budget_resets_when_the_worktree_advances() {
+    let directory = tempdir().expect("temp directory");
+    git_init(directory.path());
+    let mut config = ForgeGuardConfig::new("sample", Vec::new());
+    config.mode = GuardMode::Strict;
+    config.focus.auto_poke = false;
+    config.save(directory.path()).expect("save config");
+    let input = format!(
+        r#"{{"cwd":"{}","session_id":"session-progress"}}"#,
+        directory.path().display()
+    );
+
+    for index in 0..5 {
+        fs::write(
+            directory.path().join(format!("service-{index}.ts")),
+            "export const value = 1;\n",
+        )
+        .expect("write source");
+        start_task(
+            directory.path(),
+            "session-progress",
+            &format!("Ship increment {index}"),
+            &[],
+            false,
+        )
+        .expect("start task");
+        let (decision, _) = evaluate_stop_hook(directory.path(), &input).expect("progress stop");
+        let HookDecision::Block(message) = decision else {
+            panic!("a session that advances every turn must not be stopped");
+        };
+        assert!(message.contains("attempt 1/3"));
+        assert!(message.contains("no-progress 0/2"));
+    }
+}
+
+#[test]
+fn a_new_objective_after_a_blocked_task_starts_with_a_fresh_poke_budget() {
+    let directory = tempdir().expect("temp directory");
+    git_init(directory.path());
+    let mut config = ForgeGuardConfig::new("sample", Vec::new());
+    config.focus.auto_poke = true;
+    config.focus.max_auto_pokes = 1;
+    config.save(directory.path()).expect("save config");
+    let input = format!(
+        r#"{{"cwd":"{}","session_id":"session-recover"}}"#,
+        directory.path().display()
+    );
+
+    start_task(
+        directory.path(),
+        "session-recover",
+        "Improve latency",
+        &[],
+        false,
+    )
+    .expect("start abstract task");
+    let (decision, _) = evaluate_stop_hook(directory.path(), &input).expect("first poke");
+    assert!(matches!(decision, HookDecision::Block(_)));
+    fs::write(
+        directory.path().join("service.ts"),
+        "export const value = 1;\n",
+    )
+    .expect("write source");
+    let (decision, _) = evaluate_stop_hook(directory.path(), &input).expect("exhausted poke");
+    assert!(matches!(decision, HookDecision::Stop(_)));
+    assert_eq!(
+        task_state(directory.path(), "session-recover")
+            .expect("read task")
+            .expect("task")
+            .status,
+        TaskStatus::Blocked
+    );
+
+    start_task(
+        directory.path(),
+        "session-recover",
+        "Document the release process",
+        &[],
+        false,
+    )
+    .expect("start new objective");
+    let task = task_state(directory.path(), "session-recover")
+        .expect("read task")
+        .expect("task");
+    assert_eq!(task.auto_pokes, 0);
+    assert_eq!(task.status, TaskStatus::Active);
 }
 
 #[test]
@@ -721,6 +984,32 @@ fn zero_config_nested_repository_inherits_workspace_config_version() {
         evaluate_stop_hook(directory.path(), &input).expect("evaluate workspace hook");
 
     assert_eq!(decision, HookDecision::Pass);
+}
+
+fn git_commit_all(root: &std::path::Path) {
+    for arguments in [
+        vec!["add", "-A"],
+        vec![
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=test",
+            "commit",
+            "-qm",
+            "init",
+        ],
+    ] {
+        let status = Command::new("git")
+            .args(arguments)
+            .current_dir(root)
+            .status()
+            .expect("run git");
+        assert!(status.success());
+    }
+}
+
+fn sleep_past_duplicate_window() {
+    std::thread::sleep(std::time::Duration::from_millis(1_600));
 }
 
 fn git_init(root: &std::path::Path) {

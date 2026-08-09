@@ -115,7 +115,28 @@ fn status_output(root: &Path) -> Result<Output> {
     Ok(output)
 }
 
+/// Every path reported by `git status` paired with the subset that still exists.
+/// Scanning needs readable files, but a deleted source file still changes build,
+/// lint, and test results, so both views come from one `git status` call.
+pub fn changed_paths_partitioned(
+    root: &Path,
+) -> Result<(Vec<std::path::PathBuf>, Vec<std::path::PathBuf>)> {
+    let all = status_paths(&status_output(root)?.stdout);
+    let existing = all
+        .iter()
+        .filter(|path| root.join(path).is_file())
+        .cloned()
+        .collect();
+    Ok((all, existing))
+}
+
 fn changed_paths(root: &Path, output: &[u8]) -> Result<Vec<std::path::PathBuf>> {
+    let mut paths = status_paths(output);
+    paths.retain(|path| root.join(path).is_file());
+    Ok(paths)
+}
+
+fn status_paths(output: &[u8]) -> Vec<std::path::PathBuf> {
     let mut records = output.split(|byte| *byte == 0).peekable();
     let mut paths = Vec::new();
     while let Some(record) = records.next() {
@@ -123,11 +144,7 @@ fn changed_paths(root: &Path, output: &[u8]) -> Result<Vec<std::path::PathBuf>> 
             continue;
         }
         let status = &record[..2];
-        let raw_path = &record[3..];
-        let path = path_from_git_bytes(raw_path);
-        if root.join(&path).is_file() {
-            paths.push(path);
-        }
+        paths.push(path_from_git_bytes(&record[3..]));
 
         if status.iter().any(|value| matches!(*value, b'R' | b'C')) {
             let _ = records.next();
@@ -136,7 +153,7 @@ fn changed_paths(root: &Path, output: &[u8]) -> Result<Vec<std::path::PathBuf>> 
 
     paths.sort();
     paths.dedup();
-    Ok(paths)
+    paths
 }
 
 fn path_from_git_bytes(value: &[u8]) -> std::path::PathBuf {

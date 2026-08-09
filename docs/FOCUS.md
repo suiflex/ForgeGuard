@@ -2,6 +2,8 @@
 
 ForgeGuard installs focus enforcement with `forgeguard init`. No extra configuration is required for new repositories. Auto-poke is enabled by default and remains bounded.
 
+Enforcement is opt-in: every hook passes silently until `.forgeguard/config.toml` exists in the repository or workspace root, so a repository you never initialized is never gated, never blocked, and never written to.
+
 ## Lifecycle hooks
 
 ForgeGuard uses three hooks where the host supports them:
@@ -41,6 +43,8 @@ model ends turn
 ```
 
 Every continuation is a new host request. Generated configuration allows three auto-pokes. ForgeGuard clamps any configured value to a hard maximum of five. Retry and no-progress budgets separately bound unchanged failures.
+
+Both budgets count attempts against unchanged repository and task state only; a turn that advances either one starts a fresh budget. A blocked task keeps its auto-poke budget while the objective stays the same, and releases it when the session registers a different objective, so a stopped session can start new work instead of being stopped before its first turn.
 
 ## Hill-climbability contract
 

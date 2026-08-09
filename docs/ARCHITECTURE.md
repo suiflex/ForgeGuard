@@ -53,7 +53,10 @@ Source walking honors Git ignore files and excludes generated or dependency dire
 ## Hook policy
 
 - Hooks merge into existing JSON without replacing unrelated settings.
-- Global hooks pass silently outside initialized repositories.
+- Global hooks pass silently outside initialized repositories. Activation requires `.forgeguard/config.toml`; a detected language is never treated as consent. Nested repositories inside an initialized workspace inherit that activation.
+- A repeated stop decision for unchanged repository and task state is replayed for a short window, so a duplicated hook registration cannot consume the retry, no-progress, or auto-poke budget.
+- Stop-hook gates skip the configured commands when every changed path is documentation or an asset; the scanner still runs.
+- `forgeguard init` writes a stop-hook timeout that covers the configured command budget.
 - Claude and Codex return `decision: block`; Cursor returns `followup_message`; Antigravity returns `decision: continue`.
 - Session start/resume/compaction hooks restore the active objective where the host protocol supports context injection; Antigravity injects it on the first model invocation of an execution.
 - Pre-tool hooks warn when an edit path falls outside explicitly declared repository-relative prefixes. ForgeGuard never infers scope from prompt text.

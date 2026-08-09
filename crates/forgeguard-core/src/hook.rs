@@ -3,6 +3,7 @@ use std::{
     fs,
     hash::Hasher,
     path::{Component, Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{bail, Context, Result};
@@ -12,13 +13,26 @@ use serde_json::{json, Value};
 use crate::{
     config::{FocusConfig, ForgeGuardConfig, GuardMode, CONFIG_FILE},
     detect_project,
-    git::{changed_files, repository_roots, worktree_fingerprint},
+    git::{changed_paths_partitioned, repository_roots, worktree_fingerprint},
     model::GateSummary,
     report::{render_gate_compact, COMPACT_MAX_CHARS},
     run_gate, GateOptions, GateStatus,
 };
 
 const CACHE_DIR: &str = ".forgeguard/cache/stop";
+/// A second hook registration for the same event (for example a global and a
+/// project `settings.json` both installing the stop hook) fires within
+/// milliseconds. Replaying the first decision inside this window keeps retry,
+/// no-progress, and auto-poke budgets tied to agent turns instead of to the
+/// number of installed hook entries.
+const DUPLICATE_STOP_WINDOW_MILLIS: u64 = 1_500;
+/// Extensions that cannot change build, lint, or test results, so a stop-hook
+/// gate over only these paths runs the scanner without the configured
+/// commands.
+const DOCUMENTATION_EXTENSIONS: [&str; 17] = [
+    "md", "mdx", "markdown", "rst", "adoc", "asciidoc", "org", "txt", "text", "png", "jpg", "jpeg",
+    "gif", "webp", "svg", "ico", "pdf",
+];
 const TASK_DIR: &str = ".forgeguard/cache/tasks";
 const REPORT_FILE: &str = ".forgeguard/reports/latest.json";
 const MAX_OBJECTIVE_CHARS: usize = 4_000;
@@ -50,6 +64,14 @@ pub enum HookDecision {
     Pass,
     Block(String),
     Stop(String),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct HookReplay {
+    state: String,
+    at_millis: u64,
+    stop: bool,
+    message: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -128,13 +150,44 @@ pub fn evaluate_stop_hook(fallback_root: &Path, input: &str) -> Result<(HookDeci
     let Some(root) = find_project_root(fallback_root, &payload) else {
         return Ok((HookDecision::Pass, false));
     };
+    if !is_hook_project(&root)? {
+        return Ok((HookDecision::Pass, false));
+    }
     let repositories = repository_roots(&root)?;
     if repositories.is_empty() {
         return Ok((HookDecision::Pass, false));
     }
     let session = session_key(&payload);
-    let mut task = read_task(&root, &session)?;
     let worktree = workspace_fingerprint(&root, &repositories)?;
+    let worktree_key = worktree.as_deref().unwrap_or("clean").to_owned();
+    if let Some(decision) = replayed_decision(
+        &root,
+        &session,
+        &stop_state_key(&root, &session, &worktree_key)?,
+    ) {
+        return Ok((decision, true));
+    }
+    let evaluated = evaluate_stop_state(&root, &session, &repositories, worktree)?;
+    // The decision may have advanced the task, so the replay key describes the
+    // state a duplicate hook registration observes, not the state this call saw.
+    record_replay(
+        &root,
+        &session,
+        &stop_state_key(&root, &session, &worktree_key)?,
+        &evaluated.0,
+    )?;
+    Ok(evaluated)
+}
+
+fn evaluate_stop_state(
+    root: &Path,
+    session: &str,
+    repositories: &[PathBuf],
+    worktree: Option<String>,
+) -> Result<(HookDecision, bool)> {
+    let root = root.to_path_buf();
+    let session = session.to_owned();
+    let mut task = read_task(&root, &session)?;
     if worktree.is_none() {
         match task.as_ref().map(|task| task.status) {
             None | Some(TaskStatus::Completed | TaskStatus::Blocked) => {
@@ -206,7 +259,7 @@ pub fn evaluate_stop_hook(fallback_root: &Path, input: &str) -> Result<(HookDeci
             false,
         );
     }
-    let report = run_workspace_gate(&root, &repositories, &config)?;
+    let report = run_workspace_gate(&root, repositories, &config)?;
     write_json(&root.join(REPORT_FILE), &report)?;
     if report.status == GateStatus::Blocked {
         return bounded_block(
@@ -350,9 +403,16 @@ pub fn start_task_with_contract(
         .into_iter()
         .map(|text| TaskTodo { text, done: false })
         .collect();
+    // Carrying the auto-poke budget over stops an agent from escaping it by
+    // reframing the same work. A blocked task is different: the session already
+    // reported its blocker and stopped, so the next objective starts fresh
+    // instead of being stopped before its first turn.
     let previous = read_task(root, session_id)?;
     let (auto_pokes, confidence_history) = previous
-        .filter(|task| task.status != TaskStatus::Completed)
+        .filter(|task| {
+            task.status != TaskStatus::Completed
+                && !(task.status == TaskStatus::Blocked && task.objective != objective)
+        })
         .map_or((0, Vec::new()), |task| {
             (task.auto_pokes, task.confidence_history)
         });
@@ -635,11 +695,12 @@ fn find_project_root(fallback_root: &Path, payload: &Value) -> Option<PathBuf> {
     })
 }
 
+/// Hooks are opt-in: only a repository or workspace initialized with
+/// `forgeguard init` is guarded. Detecting a language is not consent, and
+/// silently gating a repository the user never initialized turns unrelated
+/// work (documentation, research, MCP) into blocked agent turns.
 fn is_hook_project(root: &Path) -> Result<bool> {
-    if root.join(CONFIG_FILE).is_file() {
-        return Ok(true);
-    }
-    Ok(!detect_project(root)?.languages.is_empty())
+    Ok(root.join(CONFIG_FILE).is_file())
 }
 
 fn workspace_fingerprint(workspace: &Path, repositories: &[PathBuf]) -> Result<Option<String>> {
@@ -672,12 +733,13 @@ fn run_workspace_gate(
     workspace_config: &ForgeGuardConfig,
 ) -> Result<crate::GateReport> {
     if repositories == [workspace] {
+        let (changed, existing) = changed_paths_partitioned(workspace)?;
         return run_gate(
             workspace,
             workspace_config,
             &GateOptions {
-                skip_commands: false,
-                paths: Some(changed_files(workspace)?),
+                skip_commands: !changes_require_commands(&changed),
+                paths: Some(existing),
             },
         );
     }
@@ -711,12 +773,13 @@ fn run_workspace_gate(
             config.policies = workspace_config.policies.clone();
             config.rules = workspace_config.rules.clone();
         }
+        let (changed, existing) = changed_paths_partitioned(repository)?;
         let report = run_gate(
             repository,
             &config,
             &GateOptions {
-                skip_commands: false,
-                paths: Some(changed_files(repository)?),
+                skip_commands: !changes_require_commands(&changed),
+                paths: Some(existing),
             },
         )?;
         write_json(&repository.join(REPORT_FILE), &report)?;
@@ -727,6 +790,39 @@ fn run_workspace_gate(
         );
     }
     Ok(combined)
+}
+
+/// Build, lint, and test commands only observe code and manifests. When every
+/// changed path is documentation or an asset, running them costs minutes and
+/// can block a stop on a failure the change did not cause. Anything not
+/// recognized as documentation still runs the commands.
+fn changes_require_commands(paths: &[PathBuf]) -> bool {
+    if paths.is_empty() {
+        return true;
+    }
+    !paths.iter().all(|path| is_documentation_path(path))
+}
+
+fn is_documentation_path(path: &Path) -> bool {
+    // A Markdown or text file under a test tree is a fixture: the commands read
+    // it, so a change to it must still run them.
+    if path.components().any(|component| {
+        component.as_os_str().to_str().is_some_and(|name| {
+            matches!(
+                name.to_ascii_lowercase().as_str(),
+                "test" | "tests" | "__tests__" | "spec" | "specs" | "fixtures" | "testdata"
+            )
+        })
+    }) {
+        return false;
+    }
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            DOCUMENTATION_EXTENSIONS
+                .iter()
+                .any(|candidate| extension.eq_ignore_ascii_case(candidate))
+        })
 }
 
 fn merge_report(combined: &mut crate::GateReport, mut report: crate::GateReport, prefix: &Path) {
@@ -791,14 +887,12 @@ fn bounded_block(
     focus: &FocusConfig,
     cache_hit: bool,
 ) -> Result<(HookDecision, bool)> {
-    let attempts = previous.map_or(1, |cache| cache.attempts.saturating_add(1));
-    let stalled_attempts = previous.map_or(0, |cache| {
-        if cache.fingerprint == fingerprint {
-            cache.stalled_attempts.saturating_add(1)
-        } else {
-            0
-        }
-    });
+    // Both budgets measure the same thing: attempts against unchanged state.
+    // Counting attempts across changed fingerprints would stop a session that
+    // makes real progress on every turn.
+    let repeated = previous.filter(|cache| cache.fingerprint == fingerprint);
+    let attempts = repeated.map_or(1, |cache| cache.attempts.saturating_add(1));
+    let stalled_attempts = repeated.map_or(0, |cache| cache.stalled_attempts.saturating_add(1));
     let max_retries = focus.max_retries.max(1);
     let no_progress_limit = focus.no_progress_limit.max(1);
     let exhausted = attempts > max_retries || stalled_attempts >= no_progress_limit;
@@ -1225,6 +1319,57 @@ fn read_task(root: &Path, session: &str) -> Result<Option<TaskState>> {
 
 fn write_task(root: &Path, task: &TaskState) -> Result<()> {
     write_json(&task_path(root, &task.session_id), task)
+}
+
+fn replay_path(root: &Path, session: &str) -> PathBuf {
+    root.join(CACHE_DIR).join(format!("{session}.replay.json"))
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
+fn stop_state_key(root: &Path, session: &str, worktree: &str) -> Result<String> {
+    Ok(format!(
+        "{worktree}:{}",
+        task_signature(read_task(root, session)?.as_ref())
+    ))
+}
+
+fn replayed_decision(root: &Path, session: &str, state: &str) -> Option<HookDecision> {
+    let source = fs::read_to_string(replay_path(root, session)).ok()?;
+    let replay: HookReplay = serde_json::from_str(&source).ok()?;
+    if replay.state != state {
+        return None;
+    }
+    if now_millis().saturating_sub(replay.at_millis) >= DUPLICATE_STOP_WINDOW_MILLIS {
+        return None;
+    }
+    Some(if replay.stop {
+        HookDecision::Stop(replay.message)
+    } else {
+        HookDecision::Block(replay.message)
+    })
+}
+
+fn record_replay(root: &Path, session: &str, state: &str, decision: &HookDecision) -> Result<()> {
+    let (stop, message) = match decision {
+        HookDecision::Pass => return Ok(()),
+        HookDecision::Block(message) => (false, message.clone()),
+        HookDecision::Stop(message) => (true, message.clone()),
+    };
+    write_json(
+        &replay_path(root, session),
+        &HookReplay {
+            state: state.to_owned(),
+            at_millis: now_millis(),
+            stop,
+            message,
+        },
+    )
 }
 
 fn cache_path(root: &Path, session: &str) -> PathBuf {

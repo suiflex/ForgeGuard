@@ -13,6 +13,17 @@ const AGENTS_TEMPLATE: &str = include_str!("../assets/templates/AGENTS.md");
 const CLAUDE_TEMPLATE: &str = include_str!("../assets/templates/CLAUDE.md");
 const CURSOR_TEMPLATE: &str = include_str!("../assets/templates/CURSOR.md");
 const FORGEGUARD_GITIGNORE: &str = "cache/\nreports/\n";
+const AGENT_HOOK_FILES: [&str; 5] = [
+    ".claude/settings.json",
+    ".codex/hooks.json",
+    ".cursor/hooks.json",
+    ".agents/hooks.json",
+    ".gemini/config/hooks.json",
+];
+const DEFAULT_STOP_HOOK_TIMEOUT_SECONDS: u64 = 600;
+const MAX_STOP_HOOK_TIMEOUT_SECONDS: u64 = 3_600;
+/// Scan and report time on top of the configured command budget.
+const STOP_HOOK_TIMEOUT_MARGIN_SECONDS: u64 = 120;
 pub(crate) const CODEX_HOOK_COMMAND: &str = "forgeguard hook stop --agent codex";
 pub(crate) const CLAUDE_HOOK_COMMAND: &str = "forgeguard hook stop --agent claude";
 pub(crate) const CURSOR_HOOK_COMMAND: &str = "forgeguard hook stop --agent cursor";
@@ -189,6 +200,7 @@ pub fn initialize_project(root: &Path, options: &InitOptions) -> Result<InitRepo
         &mut files_written,
         &mut files_skipped,
     )?;
+    refresh_stop_hook_timeouts(root, &mut files_written)?;
     ignore_project_agent_directories(root, &options.agents, &mut files_written)?;
 
     Ok(InitReport {
@@ -572,6 +584,72 @@ fn remove_obsolete_skill_assets(root: &Path, directory: &str) -> Result<()> {
     Ok(())
 }
 
+/// The stop hook runs the configured commands, so the host must wait at least
+/// as long as those commands may take. A host timeout shorter than the command
+/// budget kills the gate mid-run: the decision is lost and the next stop repeats
+/// the whole suite.
+fn stop_hook_timeout_seconds(root: &Path) -> u64 {
+    let Ok(config) = ForgeGuardConfig::load(root) else {
+        return DEFAULT_STOP_HOOK_TIMEOUT_SECONDS;
+    };
+    let budget = config
+        .commands
+        .iter()
+        .filter(|command| command.enabled)
+        .fold(0_u64, |total, command| {
+            total.saturating_add(command.timeout_seconds)
+        })
+        .saturating_add(STOP_HOOK_TIMEOUT_MARGIN_SECONDS);
+    budget.clamp(
+        DEFAULT_STOP_HOOK_TIMEOUT_SECONDS,
+        MAX_STOP_HOOK_TIMEOUT_SECONDS,
+    )
+}
+
+/// Hook entries installed by an earlier version keep their original timeout,
+/// because every installer skips a command it already finds. A repository whose
+/// command budget grew past that timeout would have its gate killed mid-run, so
+/// initialization repairs existing stop-hook entries too.
+fn refresh_stop_hook_timeouts(root: &Path, written: &mut Vec<String>) -> Result<()> {
+    let timeout = stop_hook_timeout_seconds(root);
+    for relative in AGENT_HOOK_FILES {
+        let path = root.join(relative);
+        if !path.is_file() {
+            continue;
+        }
+        let mut document = read_json_object(&path)?;
+        if !set_stop_hook_timeout(&mut document, timeout) {
+            continue;
+        }
+        write_json_document(root, &path, &document, written)?;
+    }
+    Ok(())
+}
+
+fn set_stop_hook_timeout(value: &mut Value, timeout: u64) -> bool {
+    match value {
+        Value::Object(fields) => {
+            let is_stop_hook = fields
+                .get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|command| command.contains("forgeguard hook stop"));
+            let mut changed = false;
+            if is_stop_hook && fields.get("timeout") != Some(&json!(timeout)) {
+                fields.insert("timeout".to_owned(), json!(timeout));
+                changed = true;
+            }
+            for nested in fields.values_mut() {
+                changed |= set_stop_hook_timeout(nested, timeout);
+            }
+            changed
+        }
+        Value::Array(values) => values.iter_mut().fold(false, |changed, nested| {
+            changed | set_stop_hook_timeout(nested, timeout)
+        }),
+        _ => false,
+    }
+}
+
 fn install_grouped_hook(
     root: &Path,
     path: &Path,
@@ -590,7 +668,7 @@ fn install_grouped_hook(
     let command_hook = json!({
         "type": "command",
         "command": command,
-        "timeout": if event == "Stop" { 600 } else { 5 }
+        "timeout": if event == "Stop" { stop_hook_timeout_seconds(root) } else { 5 }
     });
     let mut handler = json!({"hooks": [command_hook]});
     if let Some(matcher) = matcher {
@@ -622,7 +700,7 @@ fn install_cursor_hook(
     let hooks = object_field(&mut document, "hooks", path)?;
     let mut handler = json!({
         "command": command,
-        "timeout": if event == "stop" { 600 } else { 5 }
+        "timeout": if event == "stop" { stop_hook_timeout_seconds(root) } else { 5 }
     });
     if let Some(matcher) = matcher {
         handler["matcher"] = json!(matcher);
@@ -657,7 +735,7 @@ fn install_antigravity_simple_hook(
     array_field(hook, event, path)?.push(json!({
         "type": "command",
         "command": command,
-        "timeout": if event == "Stop" { 600 } else { 5 }
+        "timeout": if event == "Stop" { stop_hook_timeout_seconds(root) } else { 5 }
     }));
     write_json_document(root, path, &document, written)
 }

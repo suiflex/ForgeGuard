@@ -20,4 +20,4 @@ anyhow.workspace = true
 clap.workspace = true
 inquire.workspace = true
 serde_json.workspace = true
-forgeguard-core = { version = "0.8.0", path = "../forgeguard-core" }
+forgeguard-core = { version = "0.9.0", path = "../forgeguard-core" }

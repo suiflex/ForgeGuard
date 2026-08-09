@@ -1,6 +1,6 @@
 use std::fs;
 
-use forgeguard_core::{initialize_project, AgentTarget, InitOptions};
+use forgeguard_core::{initialize_project, AgentTarget, ForgeGuardConfig, InitOptions};
 use tempfile::tempdir;
 
 #[test]
@@ -181,6 +181,98 @@ fn installs_global_skills_without_project_configuration() {
     assert!(directory.path().join(".gemini/config/hooks.json").exists());
     assert!(!directory.path().join(".forgeguard/config.toml").exists());
     assert!(!report.files_written.is_empty());
+}
+
+#[test]
+fn stop_hook_timeout_covers_the_configured_command_budget() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("Cargo.toml"),
+        "[package]\nname = \"sample\"\n",
+    )
+    .expect("write manifest");
+
+    initialize_project(
+        directory.path(),
+        &InitOptions {
+            force: false,
+            agents: vec![AgentTarget::Claude],
+        },
+    )
+    .expect("initialize project");
+
+    let config = ForgeGuardConfig::load(directory.path()).expect("load config");
+    let budget: u64 = config
+        .commands
+        .iter()
+        .filter(|command| command.enabled)
+        .map(|command| command.timeout_seconds)
+        .sum();
+    assert!(
+        budget > 600,
+        "the Rust preset must exceed one command budget"
+    );
+    let settings: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(directory.path().join(".claude/settings.json")).expect("read settings"),
+    )
+    .expect("parse settings");
+    let timeout = settings["hooks"]["Stop"][0]["hooks"][0]["timeout"]
+        .as_u64()
+        .expect("stop hook timeout");
+    assert!(
+        timeout >= budget,
+        "stop hook timeout {timeout} must cover the {budget}s command budget"
+    );
+}
+
+#[test]
+fn reinitialization_repairs_a_stop_hook_timeout_below_the_command_budget() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("Cargo.toml"),
+        "[package]\nname = \"sample\"\n",
+    )
+    .expect("write manifest");
+    let settings = directory.path().join(".claude/settings.json");
+    fs::create_dir_all(settings.parent().expect("settings parent")).expect("create settings");
+    // An entry written by an earlier version: correct command, stale timeout.
+    fs::write(
+        &settings,
+        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"forgeguard hook stop --agent claude","timeout":600}]}]}}"#,
+    )
+    .expect("write legacy settings");
+
+    initialize_project(
+        directory.path(),
+        &InitOptions {
+            force: false,
+            agents: vec![AgentTarget::Claude],
+        },
+    )
+    .expect("initialize project");
+
+    let config = ForgeGuardConfig::load(directory.path()).expect("load config");
+    let budget: u64 = config
+        .commands
+        .iter()
+        .filter(|command| command.enabled)
+        .map(|command| command.timeout_seconds)
+        .sum();
+    let value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&settings).expect("read settings"))
+            .expect("parse settings");
+    let timeout = value["hooks"]["Stop"][0]["hooks"][0]["timeout"]
+        .as_u64()
+        .expect("stop hook timeout");
+    assert!(
+        timeout >= budget,
+        "existing stop hook timeout {timeout} must be repaired to cover {budget}s"
+    );
+    assert_eq!(
+        value.to_string().matches("forgeguard hook stop").count(),
+        1,
+        "repair must not duplicate the hook entry"
+    );
 }
 
 #[test]

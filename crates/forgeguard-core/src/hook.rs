@@ -141,8 +141,9 @@ pub fn evaluate_stop_hook(fallback_root: &Path, input: &str) -> Result<(HookDeci
                 return Ok((HookDecision::Pass, false));
             }
             Some(TaskStatus::Ready) => {
-                let config = load_hook_config(&root)?
-                    .unwrap_or_else(|| ForgeGuardConfig::new("project", Vec::new()));
+                let Some(config) = load_hook_config(&root)? else {
+                    return Ok((HookDecision::Pass, false));
+                };
                 let task = task.as_mut().expect("matched ready task");
                 if config.focus.enabled {
                     if let Some(decision) = ready_auto_poke(&root, task, &config.focus)? {
@@ -158,8 +159,7 @@ pub fn evaluate_stop_hook(fallback_root: &Path, input: &str) -> Result<(HookDeci
     }
     let config = match load_hook_config(&root)? {
         Some(config) => config,
-        None if task.is_none() => return Ok((HookDecision::Pass, false)),
-        None => ForgeGuardConfig::new("project", Vec::new()),
+        None => return Ok((HookDecision::Pass, false)),
     };
     if config.focus.enabled {
         if let Some(task) = task
@@ -481,6 +481,9 @@ pub fn evaluate_context_hook(
     let Some(root) = find_project_root(fallback_root, &payload) else {
         return Ok(None);
     };
+    if !is_hook_project(&root)? {
+        return Ok(None);
+    }
     let session = session_key(&payload);
     let task = read_task(&root, &session)?;
     if agent == HookAgent::Antigravity
@@ -531,6 +534,9 @@ pub fn evaluate_scope_hook(fallback_root: &Path, input: &str) -> Result<Option<S
         return Ok(None);
     };
     if task.status != TaskStatus::Active || task.scopes.is_empty() {
+        return Ok(None);
+    }
+    if !is_hook_project(&root)? {
         return Ok(None);
     }
     let tool_input = payload
@@ -627,6 +633,13 @@ fn find_project_root(fallback_root: &Path, payload: &Value) -> Option<PathBuf> {
             .find(|path| path.join(".git").exists() || path.join(CONFIG_FILE).is_file())
             .map(Path::to_path_buf)
     })
+}
+
+fn is_hook_project(root: &Path) -> Result<bool> {
+    if root.join(CONFIG_FILE).is_file() {
+        return Ok(true);
+    }
+    Ok(!detect_project(root)?.languages.is_empty())
 }
 
 fn workspace_fingerprint(workspace: &Path, repositories: &[PathBuf]) -> Result<Option<String>> {
@@ -1009,6 +1022,7 @@ fn task_signature(task: Option<&TaskState>) -> String {
 fn session_key(payload: &Value) -> String {
     let raw = [
         "session_id",
+        "sessionId",
         "conversation_id",
         "conversationId",
         "transcript_path",

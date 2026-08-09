@@ -1,5 +1,5 @@
 version = 1
-mode = "guard"
+mode = "default"
 
 [project]
 name = "ForgeGuard"
@@ -12,25 +12,42 @@ extra_excludes = []
 duplicate_block_lines = 6
 
 [[commands]]
+name = "build"
+command = "cargo build --workspace"
+required = true
+enabled = true
+timeout_seconds = 600
+
+[[commands]]
 name = "format"
 command = "cargo fmt --all -- --check"
 required = true
 enabled = true
+timeout_seconds = 600
 
 [[commands]]
 name = "lint"
 command = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
 required = true
 enabled = true
+timeout_seconds = 600
 
 [[commands]]
 name = "test"
 command = "cargo test --workspace"
 required = true
 enabled = true
+timeout_seconds = 600
 
-[[commands]]
-name = "build"
-command = "cargo build --workspace"
-required = true
+[focus]
 enabled = true
+max_retries = 3
+no_progress_limit = 2
+auto_poke = true
+max_auto_pokes = 3
+min_confidence = 80
+min_hill_climbability = 80
+
+[policies]
+
+[rules]

@@ -130,6 +130,50 @@ fn agent_protocols_are_silent_or_structured() {
 }
 
 #[test]
+fn camel_case_session_id_is_shared_by_context_and_stop_hooks() {
+    let directory = tempdir().expect("temp directory");
+    git_init(directory.path());
+    let mut config = ForgeGuardConfig::new("sample", Vec::new());
+    config.mode = forgeguard_core::GuardMode::Strict;
+    config.focus.auto_poke = false;
+    config.save(directory.path()).expect("save config");
+    fs::write(
+        directory.path().join("service.ts"),
+        "export const value = 1;\n",
+    )
+    .expect("write source");
+    let session = "1f1646e8-1234-4567-89ab-0123456789ab";
+    start_task(
+        directory.path(),
+        session,
+        "Verify the service value",
+        &["service.ts".to_owned()],
+        false,
+    )
+    .expect("start task");
+    let input = format!(
+        r#"{{"cwd":"{}","sessionId":"{session}"}}"#,
+        directory.path().display()
+    );
+
+    let context = evaluate_context_hook(directory.path(), &input, HookAgent::Codex)
+        .expect("evaluate context hook")
+        .expect("task context");
+    assert!(context.contains("Verify the service value"));
+    mark_task_ready(directory.path(), session, &["service verified".to_owned()])
+        .expect("mark task ready");
+    let (decision, _) = evaluate_stop_hook(directory.path(), &input).expect("evaluate stop hook");
+    assert_eq!(decision, HookDecision::Pass);
+    assert_eq!(
+        task_state(directory.path(), session)
+            .expect("read task")
+            .expect("task")
+            .status,
+        TaskStatus::Completed
+    );
+}
+
+#[test]
 fn task_state_blocks_early_stop_then_completes_with_evidence() {
     let directory = tempdir().expect("temp directory");
     git_init(directory.path());
@@ -380,6 +424,9 @@ fn auto_poke_uses_hill_goal_todos_and_confidence_before_completion() {
 fn task_context_is_session_scoped_and_scope_drift_is_warned() {
     let directory = tempdir().expect("temp directory");
     git_init(directory.path());
+    ForgeGuardConfig::new("sample", Vec::new())
+        .save(directory.path())
+        .expect("save config");
     start_task(
         directory.path(),
         "session-a",
@@ -533,6 +580,11 @@ fn auto_gate_reports_without_blocking_without_config_and_ignores_artifacts() {
         r#"{{"cwd":"{}","executionNum":1}}"#,
         directory.path().display()
     );
+    assert!(
+        evaluate_context_hook(directory.path(), &input, HookAgent::Codex)
+            .expect("evaluate context hook")
+            .is_some()
+    );
     let (decision, _) = evaluate_stop_hook(directory.path(), &input).expect("evaluate hook");
     assert_eq!(decision, HookDecision::Pass);
 
@@ -562,6 +614,44 @@ fn auto_gate_passes_for_repo_without_code() {
     let (decision, _) = evaluate_stop_hook(directory.path(), &input).expect("evaluate hook");
     assert_eq!(decision, HookDecision::Pass);
     assert!(!directory.path().join(".forgeguard").exists());
+}
+
+#[test]
+fn global_hooks_ignore_uninitialized_repository_without_code() {
+    let directory = tempdir().expect("temp directory");
+    git_init(directory.path());
+    fs::write(
+        directory.path().join(".mcp.json"),
+        r#"{"mcpServers":{"database":{"command":"database-proxy"}}}"#,
+    )
+    .expect("write MCP config");
+    start_task(
+        directory.path(),
+        "mcp-session",
+        "Inspect database data through MCP",
+        &["data".to_owned()],
+        false,
+    )
+    .expect("write stale task");
+    let input = format!(
+        r#"{{"cwd":"{}","session_id":"mcp-session","tool_input":{{"file_path":"outside.txt"}}}}"#,
+        directory.path().display()
+    );
+
+    assert!(
+        evaluate_context_hook(directory.path(), &input, HookAgent::Codex)
+            .expect("evaluate context hook")
+            .is_none()
+    );
+    assert_eq!(
+        evaluate_stop_hook(directory.path(), &input)
+            .expect("evaluate stop hook")
+            .0,
+        HookDecision::Pass
+    );
+    assert!(evaluate_scope_hook(directory.path(), &input)
+        .expect("evaluate scope hook")
+        .is_none());
 }
 
 #[test]

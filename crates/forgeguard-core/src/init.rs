@@ -68,6 +68,18 @@ const SKILL_ASSETS: &[(&str, &str)] = &[
         include_str!("../assets/skills/engineering/references/ai.md"),
     ),
     (
+        "references/ml.md",
+        include_str!("../assets/skills/engineering/references/ml.md"),
+    ),
+    (
+        "references/deep-learning.md",
+        include_str!("../assets/skills/engineering/references/deep-learning.md"),
+    ),
+    (
+        "references/mlops.md",
+        include_str!("../assets/skills/engineering/references/mlops.md"),
+    ),
+    (
         "references/testing.md",
         include_str!("../assets/skills/engineering/references/testing.md"),
     ),
@@ -422,6 +434,15 @@ fn install_claude(
     install_grouped_hook(
         root,
         &root.join(".claude/settings.json"),
+        "UserPromptSubmit",
+        None,
+        CLAUDE_CONTEXT_HOOK_COMMAND,
+        written,
+        skipped,
+    )?;
+    install_grouped_hook(
+        root,
+        &root.join(".claude/settings.json"),
         "PreToolUse",
         Some("Edit|Write|MultiEdit|NotebookEdit"),
         CLAUDE_SCOPE_HOOK_COMMAND,
@@ -660,7 +681,10 @@ fn install_grouped_hook(
     skipped: &mut Vec<String>,
 ) -> Result<()> {
     let mut document = read_json_object(path)?;
-    if contains_string(&document, command) {
+    if document
+        .pointer(&format!("/hooks/{event}"))
+        .is_some_and(|hooks| contains_hook_command(hooks, command))
+    {
         record_path(root, path, skipped);
         return Ok(());
     }
@@ -821,6 +845,19 @@ fn contains_string(value: &Value, expected: &str) -> bool {
         Value::Object(values) => values
             .values()
             .any(|value| contains_string(value, expected)),
+        _ => false,
+    }
+}
+
+fn contains_hook_command(value: &Value, expected: &str) -> bool {
+    match value {
+        Value::String(value) => value.contains(expected),
+        Value::Array(values) => values
+            .iter()
+            .any(|value| contains_hook_command(value, expected)),
+        Value::Object(values) => values
+            .values()
+            .any(|value| contains_hook_command(value, expected)),
         _ => false,
     }
 }

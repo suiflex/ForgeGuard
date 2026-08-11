@@ -61,6 +61,18 @@ fn installs_configuration_for_all_supported_agents() {
         .exists());
     assert!(directory
         .path()
+        .join(".agents/skills/forgeguard-engineering/references/ml.md")
+        .exists());
+    assert!(directory
+        .path()
+        .join(".claude/skills/forgeguard-engineering/references/deep-learning.md")
+        .exists());
+    assert!(directory
+        .path()
+        .join(".agents/skills/forgeguard-engineering/references/mlops.md")
+        .exists());
+    assert!(directory
+        .path()
         .join(".agents/skills/forgeguard-engineering/references/mobile.md")
         .exists());
     assert!(!directory.path().join(".gitignore").exists());
@@ -94,6 +106,17 @@ fn installs_configuration_for_all_supported_agents() {
     );
     assert_eq!(
         codex_hooks["hooks"]["PreToolUse"].as_array().map(Vec::len),
+        Some(1)
+    );
+    let claude_hooks: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(directory.path().join(".claude/settings.json"))
+            .expect("read Claude hooks"),
+    )
+    .expect("parse Claude hooks");
+    assert_eq!(
+        claude_hooks["hooks"]["UserPromptSubmit"]
+            .as_array()
+            .map(Vec::len),
         Some(1)
     );
     assert!(!report.files_written.is_empty());
@@ -282,7 +305,7 @@ fn hook_install_preserves_existing_settings_and_is_idempotent() {
     fs::create_dir_all(settings.parent().expect("settings parent")).expect("create settings");
     fs::write(
         &settings,
-        r#"{"permissions":{"allow":["Bash(git status)"]},"hooks":{"Stop":[]}}"#,
+        r#"{"permissions":{"allow":["Bash(git status)"]},"hooks":{"Stop":[],"SessionStart":[{"hooks":[{"type":"command","command":"repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0; forgeguard hook context --agent claude --root \"$repo_root\""}]}]}}"#,
     )
     .expect("write settings");
 
@@ -311,7 +334,15 @@ fn hook_install_preserves_existing_settings_and_is_idempotent() {
         source
             .matches("forgeguard hook context --agent claude")
             .count(),
-        1
+        2
+    );
+    assert_eq!(
+        value["hooks"]["SessionStart"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        value["hooks"]["UserPromptSubmit"].as_array().map(Vec::len),
+        Some(1)
     );
     assert_eq!(
         source
@@ -430,6 +461,13 @@ fn opencode_target_uses_shared_standards_without_unrelated_hooks() {
         .path()
         .join(".agents/skills/forgeguard-engineering/SKILL.md")
         .exists());
+    assert!(fs::read_to_string(
+        directory
+            .path()
+            .join(".agents/skills/forgeguard-engineering/SKILL.md")
+    )
+    .expect("read OpenCode skill")
+    .contains("native structured user-input tool"));
     assert!(!directory.path().join(".codex/hooks.json").exists());
     assert!(!directory.path().join(".agents/hooks.json").exists());
 }

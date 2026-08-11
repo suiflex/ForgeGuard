@@ -483,6 +483,32 @@ fn task_context_is_session_scoped_and_scope_drift_is_warned() {
 }
 
 #[test]
+fn agent_context_requires_questions_only_for_material_ambiguity() {
+    let directory = tempdir().expect("temp directory");
+    git_init(directory.path());
+    ForgeGuardConfig::new("sample", Vec::new())
+        .save(directory.path())
+        .expect("save config");
+    let input = format!(
+        r#"{{"cwd":"{}","session_id":"clarify","hook_event_name":"UserPromptSubmit"}}"#,
+        directory.path().display()
+    );
+
+    for (agent, expected) in [
+        (HookAgent::Claude, "call `AskUserQuestion`"),
+        (HookAgent::Codex, "use `request_user_input` when available"),
+        (HookAgent::Cursor, "native structured user-input tool"),
+        (HookAgent::Antigravity, "native structured user-input tool"),
+    ] {
+        let context = evaluate_context_hook(directory.path(), &input, agent)
+            .expect("evaluate agent context")
+            .expect("agent context");
+        assert!(context.contains(expected));
+        assert!(context.contains("safest reversible default"));
+    }
+}
+
+#[test]
 fn stop_retry_budget_is_isolated_by_session() {
     let directory = tempdir().expect("temp directory");
     git_init(directory.path());

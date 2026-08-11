@@ -50,6 +50,7 @@ const AUTO_POKE_PHASES: [&str; 5] = [
     "verify contracts, edge cases, and failure handling against repository evidence",
     "run final verification and confirm no objective gap remains",
 ];
+const CLARIFICATION_CONTEXT: &str = "Before acting, resolve missing facts with read-only inspection. If unresolved ambiguity materially changes behavior, data, security, scope, cost, or external or irreversible state, {question_instruction} and wait for the answer. Otherwise use the safest reversible default and state it briefly.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookAgent {
@@ -555,12 +556,23 @@ pub fn evaluate_context_hook(
     {
         return Ok(None);
     }
-    Ok(Some(match task {
+    let mut context = match task {
         Some(task) => task_context(&task),
         None => format!(
             "ForgeGuard focus session {session}. For non-trivial code changes, register the objective and verifiable todos before editing: `forgeguard task start --session {session} --objective <goal> --todo <step> [--metric <metric> --baseline <value> --target <value> --verification <check>]`. Never state a correction, number, or completion claim without exact tool/check evidence; label it unverified otherwise."
         ),
-    }))
+    };
+    let question_instruction = match agent {
+        HookAgent::Claude => "call `AskUserQuestion`",
+        HookAgent::Codex => "use `request_user_input` when available, otherwise ask directly",
+        HookAgent::Cursor | HookAgent::Antigravity => {
+            "use the host's native structured user-input tool when available, otherwise ask directly"
+        }
+    };
+    context.push(' ');
+    context
+        .push_str(&CLARIFICATION_CONTEXT.replace("{question_instruction}", question_instruction));
+    Ok(Some(context))
 }
 
 pub fn render_context_hook(agent: HookAgent, input: &str, context: &str) -> String {

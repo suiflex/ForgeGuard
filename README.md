@@ -43,7 +43,7 @@ ForgeGuard is designed not to drain user context or model limits:
 
 - The hook runs a local Rust binary and repository commands; ForgeGuard itself makes no LLM or external API call.
 - Always-on policy stays compact; detailed backend, frontend, mobile, database, algorithm, testing, and AI references load only when relevant.
-- Passing completion hooks add no model context in Codex/Claude; objective reinjection caps objective text at 300 characters, and scope feedback appears only for an explicit out-of-scope path.
+- Passing completion hooks add no model context in Codex/Claude; supported lifecycle hooks inject one compact material-ambiguity reminder, Claude refreshes it per user prompt, and OpenCode receives the same rule through the shared skill.
 - Antigravity injects focus context only on the first model invocation of an execution.
 - Blocking feedback is deduplicated and capped at 2,000 characters and five findings.
 - Auto-poke is default-on and creates one host request per continuation; the generated limit is three and the hard cap is five.
@@ -64,6 +64,7 @@ A blocked gate may cause the host agent to use another turn to fix real failures
 - OpenCode `AGENTS.md` plus shared project skills.
 - Antigravity rule, shared project skill, and native `Stop` hook.
 - Token-efficient `Stop` hooks: silent pass, bounded failure feedback, diff cache, and local full report.
+- Cross-agent material-ambiguity guard: native context hooks for Claude, Codex, Cursor, and Antigravity; shared skill fallback for OpenCode.
 - Session-scoped objective, todo, confidence, hill-climbability, auto-poke, resume, and scope-drift state.
 - One `forgeguard-engineering` skill with conditional clean-code, algorithm, backend, frontend, mobile, database, AI, and testing references.
 - Static rules for nested iteration, repeated linear lookup, sorting in loops, database I/O in loops, external requests in loops, unbounded fan-out, `SELECT *`, and potential duplicated blocks.

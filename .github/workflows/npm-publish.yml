@@ -10,13 +10,19 @@ on:
         description: Git tag that was released (e.g. v0.11.2)
         required: true
         type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to publish to npm (e.g. v0.11.2)
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   publish:
-    if: github.event_name == 'workflow_call' || github.event.workflow_run.conclusion == 'success'
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     permissions:
       contents: read

@@ -1,0 +1,49 @@
+name: Bug report
+description: Report a reproducible problem with ForgeGuard
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Please search existing issues before opening a duplicate.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Install ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: ForgeGuard version
+      description: Output of `forgeguard --version`.
+      placeholder: forgeguard 0.10.0
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Remove secrets and personal information before posting.
+      render: shell

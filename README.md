@@ -104,6 +104,25 @@ Installers use GitHub Release binaries produced for Linux, macOS, and Windows on
 cargo install --path crates/forgeguard-cli
 ```
 
+### npm
+
+The npm package installs the matching ForgeGuard GitHub Release binary for the current OS and CPU. It requires Node.js 18 or newer:
+
+```bash
+npm install -g @suiflex/forgeguard
+forgeguard --version
+```
+
+To publish manually from a tagged release:
+
+```bash
+cd npm
+npm pack --dry-run
+npm publish --access public
+```
+
+The version in `npm/package.json` must match the GitHub Release tag, and release assets must already exist before publishing. The package postinstall script downloads and verifies the platform-specific archive checksum.
+
 ## Updating
 
 `forgeguard update` only *checks* whether a newer release exists and prints a one-line

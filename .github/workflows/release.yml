@@ -3,6 +3,18 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_call:
+    inputs:
+      tag:
+        description: Git tag to build and publish (e.g. v0.11.1)
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Git tag to build and publish (e.g. v0.11.1)
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -12,11 +24,14 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
       - name: Verify tag matches package version
         shell: bash
         run: |
+          tag="${{ inputs.tag || github.ref_name }}"
           package_version="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/forgeguard-cli/Cargo.toml | head -1)"
-          test "${GITHUB_REF_NAME#v}" = "$package_version"
+          test "${tag#v}" = "$package_version"
       - uses: dtolnay/rust-toolchain@788abdaa468b02b2d53a3d1d8fcac62dc9858f4a # stable
         with:
           components: rustfmt, clippy
@@ -78,6 +93,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
       - uses: dtolnay/rust-toolchain@788abdaa468b02b2d53a3d1d8fcac62dc9858f4a # stable
         with:
           targets: ${{ matrix.target }}
@@ -123,5 +140,6 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
           generate_release_notes: true
           files: dist/*

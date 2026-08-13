@@ -21,6 +21,9 @@ jobs:
       (github.event.pull_request.merged == true &&
       startsWith(github.event.pull_request.head.ref, 'release-please--'))
     runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs['crates/forgeguard-cli--release_created'] }}
+      tag_name: ${{ steps.release.outputs['crates/forgeguard-cli--tag_name'] }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,8 +31,18 @@ jobs:
           fetch-depth: 0
 
       - uses: googleapis/release-please-action@v5
+        id: release
         with:
           token: ${{ github.token }}
           target-branch: main
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  release:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}

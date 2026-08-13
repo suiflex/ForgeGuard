@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.1](https://github.com/suiflex/ForgeGuard/compare/v0.11.0...v0.11.1) (2026-08-13)
+
+
+### Miscellaneous Chores
+
+* force a 0.11.1 release to validate the fixed pipeline ([3c490a2](https://github.com/suiflex/ForgeGuard/commit/3c490a204c04e3dcc8b9be5c15d4cf8947eca413))
+
 ## [0.11.0](https://github.com/suiflex/ForgeGuard/compare/v0.10.0...v0.11.0) (2026-08-13)
 
 

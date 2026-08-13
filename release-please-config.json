@@ -4,8 +4,7 @@
   "include-component-in-tag": false,
   "packages": {
     "crates/forgeguard-cli": {
-      "package-name": "forgeguard",
-      "release-as": "0.11.1"
+      "package-name": "forgeguard"
     }
   },
   "extra-files": [

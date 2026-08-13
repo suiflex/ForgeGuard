@@ -12,6 +12,11 @@
       "type": "json",
       "path": "/npm/package.json",
       "jsonpath": "$.version"
+    },
+    {
+      "type": "toml",
+      "path": "/Cargo.lock",
+      "jsonpath": "$.package[?(@.name==\"forgeguard\")].version"
     }
   ],
   "changelog-sections": [

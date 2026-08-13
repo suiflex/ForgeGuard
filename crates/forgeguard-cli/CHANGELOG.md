@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.2](https://github.com/suiflex/ForgeGuard/compare/v0.11.1...v0.11.2) (2026-08-13)
+
+
+### Miscellaneous Chores
+
+* force a 0.11.2 release to validate Cargo.lock automation ([8ab564b](https://github.com/suiflex/ForgeGuard/commit/8ab564b77b76dfd2c050d45717c460457debf2f4))
+
 ## [0.11.1](https://github.com/suiflex/ForgeGuard/compare/v0.11.0...v0.11.1) (2026-08-13)
 
 

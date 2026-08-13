@@ -10,3 +10,6 @@
 .agents
 .codex
 .cursor/
+/.forgeguard/
+/npm/vendor/
+/npm/*.tgz

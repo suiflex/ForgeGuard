@@ -1,0 +1,25 @@
+{
+  "name": "@suiflex/forgeguard",
+  "version": "0.10.0",
+  "description": "Token-efficient quality layer for AI coding agents",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/suiflex/ForgeGuard.git",
+    "directory": "npm"
+  },
+  "homepage": "https://github.com/suiflex/ForgeGuard",
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "forgeguard": "bin/forgeguard.js"
+  },
+  "files": [
+    "bin/forgeguard.js",
+    "scripts/install.js"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/install.js"
+  }
+}

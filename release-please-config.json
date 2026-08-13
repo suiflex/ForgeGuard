@@ -3,7 +3,7 @@
   "release-type": "rust",
   "include-component-in-tag": false,
   "packages": {
-    ".": {
+    "crates/forgeguard-cli": {
       "package-name": "forgeguard",
       "extra-files": [
         {

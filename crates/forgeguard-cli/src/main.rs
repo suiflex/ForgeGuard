@@ -8,7 +8,7 @@ use std::{
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use forgeguard_core::{
-    config::{ForgeGuardConfig, CONFIG_FILE},
+    config::{ForgeGuardConfig, UpdatePolicy, CONFIG_FILE},
     create_baseline_with_config, detect_project, evaluate_context_hook, evaluate_scope_hook,
     evaluate_stop_hook,
     git::changed_files,
@@ -115,12 +115,20 @@ enum Commands {
         #[command(subcommand)]
         command: Box<TaskCommands>,
     },
-    /// Check for a newer release (checks only; installs nothing).
+    /// Check for a newer release, or change the update policy.
     ///
-    /// Only checks and prints a notice; it installs nothing. To upgrade, re-run
-    /// the installer, then `forgeguard init --force` to refresh skills and
-    /// policies. Use `forgeguard --version` to see the installed version.
-    Update,
+    /// With no `--mode`, checks and prints a notice; `auto`/`off` never
+    /// install anything. `ask` mode also gates other TTY-run commands
+    /// (`init`, `doctor`, `gate`, `review`, `baseline`) with a y/n prompt
+    /// when a newer version is cached, and installs only on explicit "yes".
+    Update {
+        #[arg(long, value_enum)]
+        mode: Option<UpdatePolicyArg>,
+        #[arg(long)]
+        global: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -147,6 +155,23 @@ enum ModeArg {
     Default,
     Lite,
     Strict,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum UpdatePolicyArg {
+    Auto,
+    Ask,
+    Off,
+}
+
+impl From<UpdatePolicyArg> for UpdatePolicy {
+    fn from(value: UpdatePolicyArg) -> Self {
+        match value {
+            UpdatePolicyArg::Auto => UpdatePolicy::Auto,
+            UpdatePolicyArg::Ask => UpdatePolicy::Ask,
+            UpdatePolicyArg::Off => UpdatePolicy::Off,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -335,7 +360,7 @@ fn execute() -> Result<ExitCode> {
                 }
             }
             if !json {
-                print_update_notice();
+                maybe_gate_update(&root)?;
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -403,7 +428,7 @@ fn execute() -> Result<ExitCode> {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
                 print!("{}", render_doctor(&report));
-                print_update_notice();
+                maybe_gate_update(&root)?;
             }
             Ok(if report.healthy {
                 ExitCode::SUCCESS
@@ -420,6 +445,9 @@ fn execute() -> Result<ExitCode> {
             let config = ForgeGuardConfig::load(&root).context(
                 "ForgeGuard is not initialized; run `forgeguard init` in the repository first",
             )?;
+            if !json {
+                maybe_gate_update(&root)?;
+            }
             let paths = if changed {
                 Some(changed_files(&root)?)
             } else {
@@ -440,6 +468,9 @@ fn execute() -> Result<ExitCode> {
             let config = ForgeGuardConfig::load(&root).context(
                 "ForgeGuard is not initialized; run `forgeguard init` in the repository first",
             )?;
+            if !json {
+                maybe_gate_update(&root)?;
+            }
             let paths = Some(changed_files(&root)?);
             let report = run_gate(
                 &root,
@@ -458,6 +489,9 @@ fn execute() -> Result<ExitCode> {
             let config = ForgeGuardConfig::load(&root).context(
                 "ForgeGuard is not initialized; run `forgeguard init` in the repository first",
             )?;
+            if !json {
+                maybe_gate_update(&root)?;
+            }
             let baseline = create_baseline_with_config(&root, &config, force)?;
             if json {
                 println!(
@@ -485,18 +519,52 @@ fn execute() -> Result<ExitCode> {
             command: HookCommands::Scope { agent },
         } => execute_scope_hook(&root, agent.into()),
         Commands::Task { command } => execute_task(&root, *command),
-        Commands::Update => {
-            let home = home_directory()?;
-            match forgeguard_core::update::refresh(&home, true) {
-                Some(notice) => println!("{notice}"),
-                None => println!(
-                    "ForgeGuard {} is up to date.",
-                    forgeguard_core::update::current_version()
-                ),
-            }
-            Ok(ExitCode::SUCCESS)
-        }
+        Commands::Update { mode, global, json } => execute_update(&root, mode, global, json),
     }
+}
+
+fn execute_update(
+    root: &Path,
+    mode: Option<UpdatePolicyArg>,
+    global: bool,
+    json: bool,
+) -> Result<ExitCode> {
+    if let Some(mode) = mode {
+        let target = if global {
+            home_directory()?
+        } else {
+            root.to_path_buf()
+        };
+        let mut config = load_or_create_config(&target, global)?;
+        config.update.policy = mode.into();
+        save_config(&target, global, &config)?;
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "scope": if global { "global" } else { "project" },
+                    "update_policy": config.update.policy.as_str(),
+                })
+            );
+        } else {
+            println!(
+                "ForgeGuard {} update policy set to {}.",
+                if global { "global" } else { "project" },
+                config.update.policy.as_str()
+            );
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let home = home_directory()?;
+    match forgeguard_core::update::refresh(&home, true) {
+        Some(notice) => println!("{notice}"),
+        None => println!(
+            "ForgeGuard {} is up to date.",
+            forgeguard_core::update::current_version()
+        ),
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn execute_mode(root: &Path, mode: Option<ModeArg>, global: bool, json: bool) -> Result<ExitCode> {
@@ -741,6 +809,49 @@ fn print_update_notice() {
             println!("{notice}");
         }
     }
+}
+
+/// Project config wins over global config when both set an update policy;
+/// falls back to `auto` when neither is initialized.
+fn resolve_update_policy(root: &Path, home: &Path) -> UpdatePolicy {
+    if let Ok(config) = ForgeGuardConfig::load(root) {
+        return config.update.policy;
+    }
+    if let Ok(config) = ForgeGuardConfig::load_global(home) {
+        return config.update.policy;
+    }
+    UpdatePolicy::Auto
+}
+
+/// Surface the update notice according to the resolved policy. `auto` stays
+/// passive (current behavior); `ask` blocks with a y/n prompt on a real TTY
+/// and, on "yes", runs the installer; `off` skips the check entirely. Never
+/// blocks a non-interactive run (falls back to passive notice).
+fn maybe_gate_update(root: &Path) -> Result<()> {
+    let Ok(home) = home_directory() else {
+        return Ok(());
+    };
+    match resolve_update_policy(root, &home) {
+        UpdatePolicy::Off => {}
+        UpdatePolicy::Auto => print_update_notice(),
+        UpdatePolicy::Ask if io::stdin().is_terminal() => {
+            if let Some(notice) = forgeguard_core::update::refresh(&home, false) {
+                println!("{notice}");
+                print!("Update now? [y/N]: ");
+                io::stdout().flush()?;
+                let mut input = String::new();
+                io::stdin().read_line(&mut input)?;
+                if matches!(input.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+                    let status = forgeguard_core::update::run_install_command()?;
+                    if !status.success() {
+                        eprintln!("ForgeGuard update command exited with {status}.");
+                    }
+                }
+            }
+        }
+        UpdatePolicy::Ask => print_update_notice(),
+    }
+    Ok(())
 }
 
 fn render_gate_output(report: &GateReport, json: bool, output: OutputArg) -> Result<()> {

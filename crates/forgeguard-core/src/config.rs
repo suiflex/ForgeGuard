@@ -32,6 +32,34 @@ impl GuardMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdatePolicy {
+    /// Refresh the cache and print a passive notice; never prompts or installs.
+    #[default]
+    Auto,
+    /// Prompt to update on TTY-run commands when a newer version is cached.
+    Ask,
+    /// Skip the update check entirely.
+    Off,
+}
+
+impl UpdatePolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Ask => "ask",
+            Self::Off => "off",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct UpdateConfig {
+    #[serde(default)]
+    pub policy: UpdatePolicy,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectConfig {
     pub name: String,
@@ -142,6 +170,8 @@ pub struct ForgeGuardConfig {
     pub policies: PolicyConfig,
     #[serde(default)]
     pub rules: BTreeMap<String, RuleConfig>,
+    #[serde(default)]
+    pub update: UpdateConfig,
 }
 
 impl ForgeGuardConfig {
@@ -157,6 +187,7 @@ impl ForgeGuardConfig {
             focus: FocusConfig::default(),
             policies: PolicyConfig::default(),
             rules: BTreeMap::new(),
+            update: UpdateConfig::default(),
         }
     }
 
@@ -280,4 +311,33 @@ fn default_focus_min_confidence() -> u8 {
 
 fn default_focus_min_hill_climbability() -> u8 {
     80
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_without_update_section_defaults_to_auto_policy() {
+        let toml_source = r#"
+version = 2
+[project]
+name = "demo"
+"#;
+        let config: ForgeGuardConfig = toml::from_str(toml_source).unwrap();
+        assert_eq!(config.update.policy, UpdatePolicy::Auto);
+    }
+
+    #[test]
+    fn update_policy_round_trips_through_toml() {
+        let config = ForgeGuardConfig {
+            update: UpdateConfig {
+                policy: UpdatePolicy::Ask,
+            },
+            ..ForgeGuardConfig::new("demo", Vec::new())
+        };
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        let parsed: ForgeGuardConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(parsed.update.policy, UpdatePolicy::Ask);
+    }
 }

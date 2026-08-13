@@ -7,9 +7,9 @@
 //! API token, or rate-limited endpoint is required.
 
 use std::{
-    fs,
+    fs, io,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Command, ExitStatus, Stdio},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -72,6 +72,20 @@ pub fn spawn_refresh_if_stale(home: &Path) {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
+}
+
+/// Run the same installer a user would invoke by hand
+/// (`curl -fsSL .../install.sh | sh`), with inherited stdio so install output
+/// is visible. Used only when a user has explicitly confirmed an `ask`-mode
+/// update prompt; never called automatically.
+pub fn run_install_command() -> io::Result<ExitStatus> {
+    Command::new("sh")
+        .arg("-c")
+        .arg(INSTALL_COMMAND)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
 }
 
 fn is_stale(home: &Path) -> bool {

@@ -4,16 +4,16 @@
   "include-component-in-tag": false,
   "packages": {
     "crates/forgeguard-cli": {
-      "package-name": "forgeguard",
-      "extra-files": [
-        {
-          "type": "json",
-          "path": "npm/package.json",
-          "jsonpath": "$.version"
-        }
-      ]
+      "package-name": "forgeguard"
     }
   },
+  "extra-files": [
+    {
+      "type": "json",
+      "path": "npm/package.json",
+      "jsonpath": "$.version"
+    }
+  ],
   "changelog-sections": [
     { "type": "feat", "section": "Features" },
     { "type": "fix", "section": "Bug Fixes" },

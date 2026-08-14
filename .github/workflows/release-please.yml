@@ -44,6 +44,9 @@ jobs:
     permissions:
       contents: write
     uses: ./.github/workflows/release.yml
+    # The tap and bucket jobs need TAP_PUBLISH_TOKEN; a called workflow gets no secrets
+    # unless the caller passes them.
+    secrets: inherit
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}
 

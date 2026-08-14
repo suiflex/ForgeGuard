@@ -34,14 +34,22 @@ struct UpdateCache {
 /// One-line optional notice built from the cached latest version. Never touches
 /// the network; safe to call on every hook invocation.
 pub fn cached_notice(home: &Path) -> Option<String> {
+    cached_notice_for(home, current_version())
+}
+
+pub fn cached_notice_for(home: &Path, current_version: &str) -> Option<String> {
     let cache = read_cache(home)?;
-    notice(current_version(), &cache.latest)
+    notice(current_version, &cache.latest)
 }
 
 /// Refresh the cache when it is stale (or always when `force`), then return the
 /// current notice. Performs a network lookup only when a refresh is due. Used by
 /// `doctor`, `init`, and the detached `update` command.
 pub fn refresh(home: &Path, force: bool) -> Option<String> {
+    refresh_for(home, force, current_version())
+}
+
+pub fn refresh_for(home: &Path, force: bool, current_version: &str) -> Option<String> {
     if force || is_stale(home) {
         if let Some(latest) = fetch_latest_version() {
             write_cache(
@@ -53,7 +61,7 @@ pub fn refresh(home: &Path, force: bool) -> Option<String> {
             );
         }
     }
-    cached_notice(home)
+    cached_notice_for(home, current_version)
 }
 
 /// Launch a detached refresh when the cache is missing or older than the

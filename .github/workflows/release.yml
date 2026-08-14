@@ -153,3 +153,94 @@ jobs:
           tag_name: ${{ inputs.tag || github.ref_name }}
           generate_release_notes: true
           files: dist/*
+
+  # Distribution channels: siblings of each other, both gated on `publish`. Neither needs
+  # the other, so a tap failure does not cancel the bucket push or vice versa.
+  #
+  # Checksums come from this run's artifacts rather than from `gh release download`: they
+  # are already built and hashed here, so there is nothing to re-fetch and no race against
+  # release-asset propagation. The build jobs write the bare hex digest with no file name,
+  # so the value is read directly.
+
+  publish-homebrew:
+    needs: publish
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Render the formula and push it to the tap
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.TAP_PUBLISH_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          sha() { tr -d '[:space:]' < "dist/forgeguard-$1.tar.gz.sha256"; }
+
+          sed -e "s|@VERSION@|${version}|g" \
+              -e "s|@BASE@|${base}|g" \
+              -e "s|@MAC_ARM_SHA@|$(sha macos-aarch64)|g" \
+              -e "s|@MAC_X64_SHA@|$(sha macos-x86_64)|g" \
+              -e "s|@LINUX_ARM_SHA@|$(sha linux-aarch64)|g" \
+              -e "s|@LINUX_X64_SHA@|$(sha linux-x86_64)|g" \
+              packaging/forgeguard.rb.tmpl > forgeguard.rb
+          # A surviving placeholder means an artifact was missing. Fail here rather than
+          # publishing a formula that cannot install.
+          ! grep -q '@[A-Z_]*@' forgeguard.rb
+
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/suiflex/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          mv forgeguard.rb tap/Formula/forgeguard.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/forgeguard.rb
+          git commit -m "forgeguard ${version}" || { echo "tap already up to date"; exit 0; }
+          git push
+
+  publish-scoop:
+    needs: publish
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Render the manifest and push it to the bucket
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.TAP_PUBLISH_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          sha() { tr -d '[:space:]' < "dist/forgeguard-$1.zip.sha256"; }
+
+          sed -e "s|@VERSION@|${version}|g" \
+              -e "s|@BASE@|${base}|g" \
+              -e "s|@WIN_X64_SHA@|$(sha windows-x86_64)|g" \
+              -e "s|@WIN_ARM64_SHA@|$(sha windows-aarch64)|g" \
+              packaging/forgeguard.json.tmpl > forgeguard.json
+          ! grep -q '@[A-Z_]*@' forgeguard.json
+          jq empty forgeguard.json
+
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/suiflex/scoop-bucket.git" bucket
+          mkdir -p bucket/bucket
+          mv forgeguard.json bucket/bucket/forgeguard.json
+          cd bucket
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bucket/forgeguard.json
+          git commit -m "forgeguard ${version}" || { echo "bucket already up to date"; exit 0; }
+          git push

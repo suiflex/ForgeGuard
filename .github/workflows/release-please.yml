@@ -33,7 +33,9 @@ jobs:
       - uses: googleapis/release-please-action@v5
         id: release
         with:
-          token: ${{ github.token }}
+          # A PAT rather than github.token: pull requests opened with GITHUB_TOKEN do not
+          # trigger workflow events, so CI never ran on the release pull request itself.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           target-branch: main
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
@@ -44,6 +46,9 @@ jobs:
     permissions:
       contents: write
     uses: ./.github/workflows/release.yml
+    # The tap and bucket jobs need TAP_PUBLISH_TOKEN; a called workflow gets no secrets
+    # unless the caller passes them.
+    secrets: inherit
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}
 

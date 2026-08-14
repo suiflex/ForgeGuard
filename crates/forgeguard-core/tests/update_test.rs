@@ -1,6 +1,6 @@
 use std::fs;
 
-use forgeguard_core::update::{cached_notice, current_version};
+use forgeguard_core::update::{cached_notice, cached_notice_for, current_version};
 use tempfile::tempdir;
 
 fn write_cache(home: &std::path::Path, latest: &str) {
@@ -35,4 +35,12 @@ fn cached_notice_is_absent_for_the_current_release() {
 fn cached_notice_is_absent_without_a_cache() {
     let home = tempdir().expect("temp home");
     assert!(cached_notice(home.path()).is_none());
+}
+
+#[test]
+fn cached_notice_uses_the_supplied_binary_version() {
+    let home = tempdir().expect("temp home");
+    write_cache(home.path(), "0.11.2");
+
+    assert!(cached_notice_for(home.path(), "0.11.2").is_none());
 }

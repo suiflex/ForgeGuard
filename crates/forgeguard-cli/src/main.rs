@@ -20,6 +20,8 @@ use forgeguard_core::{
     InitOptions, BASELINE_FILE, LANGUAGE_CAPABILITIES, RULES,
 };
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[derive(Debug, Parser)]
 #[command(
     name = "forgeguard",
@@ -557,12 +559,9 @@ fn execute_update(
     }
 
     let home = home_directory()?;
-    match forgeguard_core::update::refresh(&home, true) {
+    match forgeguard_core::update::refresh_for(&home, true, VERSION) {
         Some(notice) => println!("{notice}"),
-        None => println!(
-            "ForgeGuard {} is up to date.",
-            forgeguard_core::update::current_version()
-        ),
+        None => println!("ForgeGuard {VERSION} is up to date."),
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -797,7 +796,7 @@ fn execute_task(root: &Path, command: TaskCommands) -> Result<ExitCode> {
 }
 
 fn append_update_notice(reason: String, home: Option<&Path>) -> String {
-    match home.and_then(forgeguard_core::update::cached_notice) {
+    match home.and_then(|home| forgeguard_core::update::cached_notice_for(home, VERSION)) {
         Some(notice) => format!("{reason}\n\n{notice}"),
         None => reason,
     }
@@ -805,7 +804,7 @@ fn append_update_notice(reason: String, home: Option<&Path>) -> String {
 
 fn print_update_notice() {
     if let Ok(home) = home_directory() {
-        if let Some(notice) = forgeguard_core::update::refresh(&home, false) {
+        if let Some(notice) = forgeguard_core::update::refresh_for(&home, false, VERSION) {
             println!("{notice}");
         }
     }
@@ -835,7 +834,7 @@ fn maybe_gate_update(root: &Path) -> Result<()> {
         UpdatePolicy::Off => {}
         UpdatePolicy::Auto => print_update_notice(),
         UpdatePolicy::Ask if io::stdin().is_terminal() => {
-            if let Some(notice) = forgeguard_core::update::refresh(&home, false) {
+            if let Some(notice) = forgeguard_core::update::refresh_for(&home, false, VERSION) {
                 println!("{notice}");
                 print!("Update now? [y/N]: ");
                 io::stdout().flush()?;

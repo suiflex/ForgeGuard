@@ -108,6 +108,23 @@ Installers use GitHub Release binaries produced for Linux, macOS, and Windows on
 cargo install --path crates/forgeguard-cli
 ```
 
+### Homebrew
+
+```bash
+brew install suiflex/tap/forgeguard
+```
+
+A formula-installed binary is upgraded with `brew upgrade forgeguard`, not by re-running the installer. Global rules, skills, and hooks are not installed by the formula, so run `forgeguard init` afterwards.
+
+### Scoop
+
+```powershell
+scoop bucket add suiflex https://github.com/suiflex/scoop-bucket
+scoop install forgeguard
+```
+
+Upgrade with `scoop update forgeguard`.
+
 ### npm
 
 The npm package installs the matching ForgeGuard GitHub Release binary for the current OS and CPU. It requires Node.js 18 or newer:

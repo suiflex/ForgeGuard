@@ -1,0 +1,43 @@
+# Template for suiflex/homebrew-tap Formula/forgeguard.rb.
+#
+# .github/workflows/release.yml renders this with sed on every tagged release, filling the
+# placeholders below from that run's build artifacts. Edit this template, never the
+# generated file in the tap: the next release overwrites it.
+#
+# The class name follows the file name, so Formula/forgeguard.rb must declare Forgeguard.
+class Forgeguard < Formula
+  desc "Token-efficient, language-agnostic engineering guardrails for AI coding agents"
+  homepage "https://github.com/suiflex/ForgeGuard"
+  version "@VERSION@"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "@BASE@/forgeguard-macos-aarch64.tar.gz"
+      sha256 "@MAC_ARM_SHA@"
+    end
+    on_intel do
+      url "@BASE@/forgeguard-macos-x86_64.tar.gz"
+      sha256 "@MAC_X64_SHA@"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "@BASE@/forgeguard-linux-aarch64.tar.gz"
+      sha256 "@LINUX_ARM_SHA@"
+    end
+    on_intel do
+      url "@BASE@/forgeguard-linux-x86_64.tar.gz"
+      sha256 "@LINUX_X64_SHA@"
+    end
+  end
+
+  def install
+    bin.install "forgeguard"
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/forgeguard --version")
+  end
+end

@@ -25,7 +25,7 @@ jobs:
       release_created: ${{ steps.release.outputs['crates/forgeguard-cli--release_created'] }}
       tag_name: ${{ steps.release.outputs['crates/forgeguard-cli--tag_name'] }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0

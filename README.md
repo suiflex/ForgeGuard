@@ -311,15 +311,29 @@ targets add no directory, so they add no ignore entry.
    forgeguard init --agent all
    ```
 
-2. **A terminal with no `--agent`** opens the interactive picker, with the agents
-   already configured in the directory pre-checked. Confirming an empty selection
-   installs nothing rather than everything.
+2. **A terminal with no `--agent`** opens the interactive picker. It lists what each
+   target writes, pre-checks the agents already configured in the directory, and
+   treats an empty selection as "install nothing" rather than "install everything".
 
 3. **No terminal and no `--agent`** — a script, CI job, or another agent shelling out —
-   installs only for the agents whose own configuration is already present
-   (`.claude/`, `.codex/`, `.cursor/`, `.agents/`, `.windsurf/`, `.clinerules/`,
-   `.roo/`, `.github/copilot-instructions.md`, and their user-directory equivalents
-   under `--global`).
+   installs only for the agents whose own configuration is already present.
+
+   | Agent | Detected by |
+   |---|---|
+   | Codex | `.codex/` |
+   | Claude Code | `.claude/` |
+   | Cursor | `.cursor/`, `.cursorrules` |
+   | OpenCode | `.opencode/`, `opencode.json` |
+   | Antigravity | `.agents/rules/`, `.agents/hooks.json`, `.agent/rules/` |
+   | Windsurf / Devin | `.windsurf/`, `.devin/`, `.windsurfrules` |
+   | GitHub Copilot | `.github/copilot-instructions.md`, `.github/instructions/` |
+   | Cline | `.clinerules` |
+   | Roo Code | `.roo/`, `.roorules` |
+
+   Markers are the agent's own configuration. `.agents/skills/` is deliberately not
+   one: Codex, Cursor, and OpenCode share that directory, so treating it as an
+   Antigravity marker would make every re-run silently add a target. Under
+   `--global` the equivalent user-directory paths are used instead.
 
    When nothing is detected, `init` writes nothing and exits **3** with the available
    choices on stderr, so a caller re-runs with an explicit selection instead of

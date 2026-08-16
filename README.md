@@ -211,10 +211,34 @@ the superseded `~/.gemini/config/skills/` to `~/.gemini/antigravity-cli/skills/`
 no longer writes a user-level Antigravity hook file, because none is documented; the
 workspace `.agents/hooks.json` gate is unchanged.
 
-> **Warning:** `--force` also regenerates `.forgeguard/config.toml` from detection defaults,
-> resetting any custom commands and operating mode. If you customized the config, back it up
-> first, or re-apply the mode afterward with `forgeguard mode default|lite|strict`. A committed
-> `.forgeguard/baseline.json` is not touched.
+`.forgeguard/config.toml` is created once and then left alone. The operating mode and any
+command you tuned survive every later `init`, `--refresh`, and `--force`; a committed
+`.forgeguard/baseline.json` is likewise untouched.
+
+### Keeping policy and skill files current
+
+A new release can ship an updated engineering skill or policy template, but the copies in your
+repository may also carry your own edits. `init` therefore compares them and reports the
+difference instead of choosing for you:
+
+```text
+┌─ 2 ForgeGuard files differ from this version ──┐
+│ CLAUDE.md                                      │
+│ .claude/skills/forgeguard-engineering/SKILL.md │
+└────────────────────────────────────────────────┘
+◇ Replace them with the bundled versions? (y/N)
+```
+
+In a terminal it asks, listing every affected file and defaulting to **no**, so a stray Enter
+never costs you your edits. Without a terminal it prints the same list and the command to run,
+and changes nothing:
+
+```bash
+forgeguard init --refresh    # replace the drifted files, no prompt
+forgeguard init --force      # replace every ForgeGuard-owned file, drifted or not
+```
+
+Neither flag touches `.forgeguard/config.toml`.
 
 ## Quick start
 

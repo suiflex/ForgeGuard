@@ -107,6 +107,32 @@ test -f "$project/CLAUDE.md" || { echo "error: CLAUDE.md missing" >&2; exit 1; }
 test -f "$project/.cursor/rules/forgeguard.mdc" || { echo "error: cursor rules missing" >&2; exit 1; }
 test ! -f "$project/AGENTS.md" || { echo "error: AGENTS.md written for an unselected agent" >&2; exit 1; }
 
+# A drifted ForgeGuard-owned file must be offered, not silently replaced.
+drift="${temporary_directory}/drift"
+mkdir -p "$drift/.claude"
+git -C "$drift" init -q
+"$binary" --root "$drift" init --agent claude >/dev/null 2>&1
+printf 'hand written\n' > "$drift/CLAUDE.md"
+{
+    sleep 0.6; printf '\r'
+    sleep 0.6; printf '\r'
+    sleep 1.0
+} | run_on_pty "$binary" --root "$drift" init --agent claude > "${temporary_directory}/drift-out" 2>&1 || true
+strip_ansi < "${temporary_directory}/drift-out" > "${temporary_directory}/drift-plain"
+
+for expected in "ForgeGuard file" "CLAUDE.md" "Replace them with the bundled versions?"; do
+    if ! grep -qF "$expected" "${temporary_directory}/drift-plain"; then
+        echo "error: refresh prompt never showed: $expected" >&2
+        cat "${temporary_directory}/drift-plain" >&2
+        exit 1
+    fi
+done
+# Enter accepts the default, which is to keep the file.
+if [ "$(cat "$drift/CLAUDE.md")" != "hand written" ]; then
+    echo "error: declining the prompt still replaced the file" >&2
+    exit 1
+fi
+
 # An empty pick must install nothing. Left arrow clears the selection, and two
 # empty confirmations cancel.
 empty="${temporary_directory}/empty"

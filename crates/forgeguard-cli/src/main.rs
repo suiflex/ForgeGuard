@@ -40,12 +40,15 @@ struct Cli {
 enum Commands {
     /// Install or refresh ForgeGuard for a repo or globally (--force to refresh after an upgrade).
     Init {
-        /// Overwrite ForgeGuard-owned policy and skill files with the bundled
-        /// versions and prune obsolete role-skill directories. Also regenerates
-        /// .forgeguard/config.toml from detection defaults, resetting custom
-        /// commands and mode. Use to refresh an existing install after an upgrade.
+        /// Overwrite every ForgeGuard-owned policy and skill file with the
+        /// bundled version and prune obsolete role-skill directories, whether or
+        /// not it had drifted. `.forgeguard/config.toml` is left alone.
         #[arg(long)]
         force: bool,
+        /// Replace the ForgeGuard-owned files that have drifted from the bundled
+        /// versions, without prompting. Configuration is never touched.
+        #[arg(long)]
+        refresh: bool,
         /// Install rules, skills, and hooks for supported agents under the user directory.
         #[arg(long)]
         global: bool,
@@ -317,6 +320,7 @@ fn execute() -> Result<ExitCode> {
     match cli.command {
         Commands::Init {
             force,
+            refresh,
             global,
             agent,
             json,
@@ -349,7 +353,11 @@ fn execute() -> Result<ExitCode> {
                     false,
                 )
             };
-            let options = InitOptions { force, agents };
+            let options = InitOptions {
+                force,
+                refresh,
+                agents,
+            };
             if use_global {
                 let home = home_directory()?;
                 let report = initialize_global(&home, &options)?;
@@ -368,6 +376,20 @@ fn execute() -> Result<ExitCode> {
                             theme::ACCENT,
                         )
                     );
+                    if offer_refresh(&report.files_outdated)? {
+                        let report = initialize_global(
+                            &home,
+                            &InitOptions {
+                                refresh: true,
+                                ..options.clone()
+                            },
+                        )?;
+                        render_init_result(
+                            &report.agents,
+                            &report.files_written,
+                            &report.files_skipped,
+                        );
+                    }
                     if io::stdin().is_terminal() {
                         configure_mode_interactive(&home, true)?;
                     }
@@ -390,6 +412,21 @@ fn execute() -> Result<ExitCode> {
                         done.push_str("; ignored .forgeguard/ in .gitignore");
                     }
                     println!("{}\n", theme::point(&done, theme::ACCENT));
+                    if offer_refresh(&report.files_outdated)? {
+                        let report = initialize_project(
+                            &root,
+                            &InitOptions {
+                                refresh: true,
+                                ..options.clone()
+                            },
+                        )?;
+                        render_init_result(
+                            &report.agents,
+                            &report.files_written,
+                            &report.files_skipped,
+                        );
+                        println!();
+                    }
                     print!("{}", render_detection(&report.detection));
                     if io::stdin().is_terminal() {
                         configure_mode_interactive(&root, false)?;
@@ -1303,10 +1340,13 @@ mod theme {
 
     /// Bordered panel around a block of lines.
     pub(super) fn panel(lines: &[String], title: &str, color: &str) -> String {
+        // The title sits inside the top border and needs at least one dash after
+        // it, so it claims a column more than a body line of the same length.
+        // Without that the top border runs one character past the sides.
         let width = lines
             .iter()
             .map(|line| line.chars().count())
-            .chain(std::iter::once(title.chars().count()))
+            .chain(std::iter::once(title.chars().count() + 1))
             .max()
             .unwrap_or(0)
             .max(20);
@@ -1388,6 +1428,48 @@ fn summarize_paths(paths: &[String]) -> Vec<String> {
             }
         })
         .collect()
+}
+
+/// A newer release ships newer policy and skill files, but the copies on disk
+/// may also carry edits the user made. Replacing them is therefore the user's
+/// call, not the installer's: name every file, ask, and default to keeping them
+/// so a stray Enter never costs anyone their work.
+///
+/// Returns whether the caller should reinstall with `refresh` set.
+fn offer_refresh(outdated: &[String]) -> Result<bool> {
+    if outdated.is_empty() {
+        return Ok(false);
+    }
+    let summary = format!(
+        "{} ForgeGuard file{} differ{} from this version",
+        outdated.len(),
+        if outdated.len() == 1 { "" } else { "s" },
+        if outdated.len() == 1 { "s" } else { "" },
+    );
+
+    // Without a terminal there is nobody to ask, so say what is stale and how to
+    // act on it rather than overwriting on the user's behalf.
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        println!(
+            "{}",
+            theme::panel(
+                outdated,
+                "outdated — run `forgeguard init --refresh`",
+                theme::AMBER
+            )
+        );
+        return Ok(false);
+    }
+
+    println!("{}", theme::panel(outdated, &summary, theme::AMBER));
+    inquire::Confirm::new("Replace them with the bundled versions?")
+        .with_default(false)
+        .with_help_message(
+            "your edits to these files would be lost; configuration is never touched",
+        )
+        .with_render_config(theme::render_config())
+        .prompt()
+        .context("refresh prompt cancelled")
 }
 
 fn render_init_result(agents: &[AgentTarget], written: &[String], skipped: &[String]) {

@@ -123,7 +123,12 @@ pub enum AgentTarget {
 
 #[derive(Debug, Clone)]
 pub struct InitOptions {
+    /// Reinstall every ForgeGuard-owned file and prune superseded directories.
     pub force: bool,
+    /// Overwrite only the ForgeGuard-owned files that have drifted from the
+    /// bundled versions. The non-interactive form of answering yes to the
+    /// refresh prompt.
+    pub refresh: bool,
     pub agents: Vec<AgentTarget>,
 }
 
@@ -131,9 +136,22 @@ impl Default for InitOptions {
     fn default() -> Self {
         Self {
             force: false,
+            refresh: false,
             agents: vec![AgentTarget::All],
         }
     }
+}
+
+/// What an install did, split so the caller can tell "already correct" from
+/// "exists but stale".
+#[derive(Debug, Default)]
+struct InstallLog {
+    written: Vec<String>,
+    skipped: Vec<String>,
+    /// ForgeGuard-owned files that exist but no longer match the bundled
+    /// version. Replacing a file the user may have edited is their decision, so
+    /// these are reported rather than silently rewritten.
+    outdated: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,6 +161,8 @@ pub struct InitReport {
     pub agents: Vec<AgentTarget>,
     pub files_written: Vec<String>,
     pub files_skipped: Vec<String>,
+    /// Existing ForgeGuard-owned files that differ from the bundled versions.
+    pub files_outdated: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,6 +171,7 @@ pub struct GlobalInitReport {
     pub agents: Vec<AgentTarget>,
     pub files_written: Vec<String>,
     pub files_skipped: Vec<String>,
+    pub files_outdated: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -234,23 +255,22 @@ pub fn initialize_global(home: &Path, options: &InitOptions) -> Result<GlobalIni
     let home = home
         .canonicalize()
         .with_context(|| format!("failed to resolve home directory {}", home.display()))?;
-    let mut files_written = Vec::new();
-    let mut files_skipped = Vec::new();
+    let mut log = InstallLog::default();
 
     install_agents(
         &home,
         InstallScope::Global,
         &options.agents,
-        options.force,
-        &mut files_written,
-        &mut files_skipped,
+        options.force || options.refresh,
+        &mut log,
     )?;
 
     Ok(GlobalInitReport {
         home,
         agents: expand_agent_targets(&options.agents),
-        files_written,
-        files_skipped,
+        files_written: log.written,
+        files_skipped: log.skipped,
+        files_outdated: log.outdated,
     })
 }
 
@@ -262,40 +282,36 @@ pub fn initialize_project(root: &Path, options: &InitOptions) -> Result<InitRepo
         .unwrap_or("project");
     let config = ForgeGuardConfig::new(project_name, detection.suggested_commands.clone());
 
-    let mut files_written = Vec::new();
-    let mut files_skipped = Vec::new();
-    write_config(
-        root,
-        &config,
-        options.force,
-        &mut files_written,
-        &mut files_skipped,
-    )?;
+    let mut log = InstallLog::default();
+    let overwrite = options.force || options.refresh;
+    // Configuration is created once and then belongs to the repository: it holds
+    // the operating mode and any command the user tuned. Reinstalling files
+    // ForgeGuard ships is no reason to throw that away.
+    write_config(root, &config, &mut log)?;
     write_file(
         root,
         &root.join(".forgeguard/.gitignore"),
         FORGEGUARD_GITIGNORE,
-        options.force,
-        &mut files_written,
-        &mut files_skipped,
+        overwrite,
+        &mut log,
     )?;
 
     install_agents(
         root,
         InstallScope::Project,
         &options.agents,
-        options.force,
-        &mut files_written,
-        &mut files_skipped,
+        overwrite,
+        &mut log,
     )?;
-    refresh_stop_hook_timeouts(root, &mut files_written)?;
-    ignore_project_agent_directories(root, &options.agents, &mut files_written)?;
+    refresh_stop_hook_timeouts(root, &mut log.written)?;
+    ignore_project_agent_directories(root, &options.agents, &mut log)?;
 
     Ok(InitReport {
         detection,
         agents: expand_agent_targets(&options.agents),
-        files_written,
-        files_skipped,
+        files_written: log.written,
+        files_skipped: log.skipped,
+        files_outdated: log.outdated,
     })
 }
 
@@ -304,20 +320,19 @@ fn install_agents(
     scope: InstallScope,
     requested: &[AgentTarget],
     force: bool,
-    written: &mut Vec<String>,
-    skipped: &mut Vec<String>,
+    log: &mut InstallLog,
 ) -> Result<()> {
     for target in expand_agent_targets(requested) {
         match target {
-            AgentTarget::Codex => install_codex(root, scope, force, written, skipped)?,
-            AgentTarget::Claude => install_claude(root, scope, force, written, skipped)?,
-            AgentTarget::Cursor => install_cursor(root, scope, force, written, skipped)?,
-            AgentTarget::OpenCode => install_opencode(root, scope, force, written, skipped)?,
-            AgentTarget::Antigravity => install_antigravity(root, scope, force, written, skipped)?,
+            AgentTarget::Codex => install_codex(root, scope, force, log)?,
+            AgentTarget::Claude => install_claude(root, scope, force, log)?,
+            AgentTarget::Cursor => install_cursor(root, scope, force, log)?,
+            AgentTarget::OpenCode => install_opencode(root, scope, force, log)?,
+            AgentTarget::Antigravity => install_antigravity(root, scope, force, log)?,
             AgentTarget::Windsurf
             | AgentTarget::Copilot
             | AgentTarget::Cline
-            | AgentTarget::Roo => install_agents_md(root, target, scope, force, written, skipped)?,
+            | AgentTarget::Roo => install_agents_md(root, target, scope, force, log)?,
             AgentTarget::All => unreachable!("all is expanded before installation"),
         }
     }
@@ -348,7 +363,7 @@ fn expand_agent_targets(requested: &[AgentTarget]) -> Vec<AgentTarget> {
 fn ignore_project_agent_directories(
     root: &Path,
     requested: &[AgentTarget],
-    written: &mut Vec<String>,
+    log: &mut InstallLog,
 ) -> Result<()> {
     let path = root.join(".gitignore");
     if !path.is_file() {
@@ -403,30 +418,26 @@ fn ignore_project_agent_directories(
     }
     if changed {
         fs::write(&path, content).with_context(|| format!("failed to write {}", path.display()))?;
-        record_path(root, &path, written);
+        record_path(root, &path, &mut log.written);
     }
     Ok(())
 }
 
-fn write_config(
-    root: &Path,
-    config: &ForgeGuardConfig,
-    force: bool,
-    written: &mut Vec<String>,
-    skipped: &mut Vec<String>,
-) -> Result<()> {
+fn write_config(root: &Path, config: &ForgeGuardConfig, log: &mut InstallLog) -> Result<()> {
     let path = root.join(".forgeguard/config.toml");
+    if path.exists() {
+        return Ok(());
+    }
     let content =
         toml::to_string_pretty(config).context("failed to serialize ForgeGuard config")?;
-    write_file(root, &path, &content, force, written, skipped)
+    write_file(root, &path, &content, false, log)
 }
 
 fn install_codex(
     root: &Path,
     scope: InstallScope,
     force: bool,
-    written: &mut Vec<String>,
-    skipped: &mut Vec<String>,
+    log: &mut InstallLog,
 ) -> Result<()> {
     if force {
         remove_legacy_skills(root, ".codex/skills", true)?;
@@ -435,22 +446,15 @@ fn install_codex(
         InstallScope::Project => root.join("AGENTS.md"),
         InstallScope::Global => root.join(".codex/AGENTS.md"),
     };
-    write_file(root, &policy_path, AGENTS_TEMPLATE, force, written, skipped)?;
-    install_skill(
-        root,
-        ".agents/skills/forgeguard-engineering",
-        force,
-        written,
-        skipped,
-    )?;
+    write_file(root, &policy_path, AGENTS_TEMPLATE, force, log)?;
+    install_skill(root, ".agents/skills/forgeguard-engineering", force, log)?;
     install_grouped_hook(
         root,
         &root.join(".codex/hooks.json"),
         "Stop",
         None,
         CODEX_HOOK_COMMAND,
-        written,
-        skipped,
+        log,
     )?;
     install_grouped_hook(
         root,
@@ -458,8 +462,7 @@ fn install_codex(
         "SessionStart",
         Some("startup|resume|compact"),
         CODEX_CONTEXT_HOOK_COMMAND,
-        written,
-        skipped,
+        log,
     )?;
     install_grouped_hook(
         root,
@@ -467,8 +470,7 @@ fn install_codex(
         "PreToolUse",
         Some("apply_patch|Edit|Write"),
         CODEX_SCOPE_HOOK_COMMAND,
-        written,
-        skipped,
+        log,
     )
 }
 
@@ -476,8 +478,7 @@ fn install_claude(
     root: &Path,
     scope: InstallScope,
     force: bool,
-    written: &mut Vec<String>,
-    skipped: &mut Vec<String>,
+    log: &mut InstallLog,
 ) -> Result<()> {
     if force {
         remove_legacy_skills(root, ".claude/skills", false)?;
@@ -486,22 +487,15 @@ fn install_claude(
         InstallScope::Project => root.join("CLAUDE.md"),
         InstallScope::Global => root.join(".claude/CLAUDE.md"),
     };
-    write_file(root, &policy_path, CLAUDE_TEMPLATE, force, written, skipped)?;
-    install_skill(
-        root,
-        ".claude/skills/forgeguard-engineering",
-        force,
-        written,
-        skipped,
-    )?;
+    write_file(root, &policy_path, CLAUDE_TEMPLATE, force, log)?;
+    install_skill(root, ".claude/skills/forgeguard-engineering", force, log)?;
     install_grouped_hook(
         root,
         &root.join(".claude/settings.json"),
         "Stop",
         None,
         CLAUDE_HOOK_COMMAND,
-        written,
-        skipped,
+        log,
     )?;
     install_grouped_hook(
         root,
@@ -509,8 +503,7 @@ fn install_claude(
         "SessionStart",
         Some("startup|resume|compact"),
         CLAUDE_CONTEXT_HOOK_COMMAND,
-        written,
-        skipped,
+        log,
     )?;
     install_grouped_hook(
         root,
@@ -518,8 +511,7 @@ fn install_claude(
         "UserPromptSubmit",
         None,
         CLAUDE_CONTEXT_HOOK_COMMAND,
-        written,
-        skipped,
+        log,
     )?;
     install_grouped_hook(
         root,
@@ -527,8 +519,7 @@ fn install_claude(
         "PreToolUse",
         Some("Edit|Write|MultiEdit|NotebookEdit"),
         CLAUDE_SCOPE_HOOK_COMMAND,
-        written,
-        skipped,
+        log,
     )
 }
 
@@ -536,39 +527,23 @@ fn install_cursor(
     root: &Path,
     scope: InstallScope,
     force: bool,
-    written: &mut Vec<String>,
-    skipped: &mut Vec<String>,
+    log: &mut InstallLog,
 ) -> Result<()> {
     let rule_path = match scope {
         InstallScope::Project => root.join(".cursor/rules/forgeguard.mdc"),
         InstallScope::Global => root.join(".cursor/rules/forgeguard.mdc"),
     };
-    write_file(root, &rule_path, CURSOR_TEMPLATE, force, written, skipped)?;
-    install_skill(
-        root,
-        ".agents/skills/forgeguard-engineering",
-        force,
-        written,
-        skipped,
-    )?;
+    write_file(root, &rule_path, CURSOR_TEMPLATE, force, log)?;
+    install_skill(root, ".agents/skills/forgeguard-engineering", force, log)?;
     let path = root.join(".cursor/hooks.json");
-    install_cursor_hook(
-        root,
-        &path,
-        "stop",
-        None,
-        CURSOR_HOOK_COMMAND,
-        written,
-        skipped,
-    )?;
+    install_cursor_hook(root, &path, "stop", None, CURSOR_HOOK_COMMAND, log)?;
     install_cursor_hook(
         root,
         &path,
         "sessionStart",
         None,
         CURSOR_CONTEXT_HOOK_COMMAND,
-        written,
-        skipped,
+        log,
     )?;
     install_cursor_hook(
         root,
@@ -576,8 +551,7 @@ fn install_cursor(
         "preToolUse",
         Some("Write|StrReplace|Delete|ApplyPatch"),
         CURSOR_SCOPE_HOOK_COMMAND,
-        written,
-        skipped,
+        log,
     )
 }
 
@@ -585,8 +559,7 @@ fn install_opencode(
     root: &Path,
     scope: InstallScope,
     force: bool,
-    written: &mut Vec<String>,
-    skipped: &mut Vec<String>,
+    log: &mut InstallLog,
 ) -> Result<()> {
     let (policy_path, skill_directory) = match scope {
         InstallScope::Project => (
@@ -598,16 +571,15 @@ fn install_opencode(
             ".config/opencode/skills/forgeguard-engineering",
         ),
     };
-    write_file(root, &policy_path, AGENTS_TEMPLATE, force, written, skipped)?;
-    install_skill(root, skill_directory, force, written, skipped)
+    write_file(root, &policy_path, AGENTS_TEMPLATE, force, log)?;
+    install_skill(root, skill_directory, force, log)
 }
 
 fn install_antigravity(
     root: &Path,
     scope: InstallScope,
     force: bool,
-    written: &mut Vec<String>,
-    skipped: &mut Vec<String>,
+    log: &mut InstallLog,
 ) -> Result<()> {
     let (policy_path, skill_directory) = match scope {
         InstallScope::Project => (
@@ -622,8 +594,8 @@ fn install_antigravity(
     if force {
         remove_directory(root, OBSOLETE_GLOBAL_ANTIGRAVITY_SKILL_DIRECTORY)?;
     }
-    write_file(root, &policy_path, AGENTS_TEMPLATE, force, written, skipped)?;
-    install_skill(root, skill_directory, force, written, skipped)?;
+    write_file(root, &policy_path, AGENTS_TEMPLATE, force, log)?;
+    install_skill(root, skill_directory, force, log)?;
 
     // Only the workspace agent has a documented local hook file. Antigravity
     // publishes no user-level hook path, so a global install stops at rules and
@@ -632,29 +604,20 @@ fn install_antigravity(
         return Ok(());
     };
     let hook_path = root.join(".agents/hooks.json");
-    install_antigravity_simple_hook(
-        root,
-        &hook_path,
-        "Stop",
-        ANTIGRAVITY_HOOK_COMMAND,
-        written,
-        skipped,
-    )?;
+    install_antigravity_simple_hook(root, &hook_path, "Stop", ANTIGRAVITY_HOOK_COMMAND, log)?;
     install_antigravity_simple_hook(
         root,
         &hook_path,
         "PreInvocation",
         ANTIGRAVITY_CONTEXT_HOOK_COMMAND,
-        written,
-        skipped,
+        log,
     )?;
     install_antigravity_tool_hook(
         root,
         &hook_path,
         "write_to_file|replace_file_content|multi_replace_file_content",
         ANTIGRAVITY_SCOPE_HOOK_COMMAND,
-        written,
-        skipped,
+        log,
     )
 }
 
@@ -672,8 +635,7 @@ fn install_agents_md(
     target: AgentTarget,
     scope: InstallScope,
     force: bool,
-    written: &mut Vec<String>,
-    skipped: &mut Vec<String>,
+    log: &mut InstallLog,
 ) -> Result<()> {
     let relative = match scope {
         InstallScope::Project => "AGENTS.md",
@@ -682,14 +644,7 @@ fn install_agents_md(
             None => return Ok(()),
         },
     };
-    write_file(
-        root,
-        &root.join(relative),
-        AGENTS_TEMPLATE,
-        force,
-        written,
-        skipped,
-    )
+    write_file(root, &root.join(relative), AGENTS_TEMPLATE, force, log)
 }
 
 /// Where each `AGENTS.md`-only agent reads user-level rules from. `None` means the
@@ -708,16 +663,10 @@ fn global_policy_path(target: AgentTarget) -> Option<&'static str> {
     }
 }
 
-fn install_skill(
-    root: &Path,
-    directory: &str,
-    force: bool,
-    written: &mut Vec<String>,
-    skipped: &mut Vec<String>,
-) -> Result<()> {
+fn install_skill(root: &Path, directory: &str, force: bool, log: &mut InstallLog) -> Result<()> {
     for (relative, content) in SKILL_ASSETS {
         let path = root.join(directory).join(relative);
-        write_file(root, &path, content, force, written, skipped)?;
+        write_file(root, &path, content, force, log)?;
     }
     if force {
         remove_obsolete_skill_assets(root, directory)?;
@@ -817,15 +766,14 @@ fn install_grouped_hook(
     event: &str,
     matcher: Option<&str>,
     command: &str,
-    written: &mut Vec<String>,
-    skipped: &mut Vec<String>,
+    log: &mut InstallLog,
 ) -> Result<()> {
     let mut document = read_json_object(path)?;
     if document
         .pointer(&format!("/hooks/{event}"))
         .is_some_and(|hooks| contains_hook_command(hooks, command))
     {
-        record_path(root, path, skipped);
+        record_path(root, path, &mut log.skipped);
         return Ok(());
     }
     let hooks = object_field(&mut document, "hooks", path)?;
@@ -839,7 +787,7 @@ fn install_grouped_hook(
         handler["matcher"] = json!(matcher);
     }
     array_field(hooks, event, path)?.push(handler);
-    write_json_document(root, path, &document, written)
+    write_json_document(root, path, &document, &mut log.written)
 }
 
 fn install_cursor_hook(
@@ -848,12 +796,11 @@ fn install_cursor_hook(
     event: &str,
     matcher: Option<&str>,
     command: &str,
-    written: &mut Vec<String>,
-    skipped: &mut Vec<String>,
+    log: &mut InstallLog,
 ) -> Result<()> {
     let mut document = read_json_object(path)?;
     if contains_string(&document, command) {
-        record_path(root, path, skipped);
+        record_path(root, path, &mut log.skipped);
         return Ok(());
     }
     document
@@ -870,7 +817,7 @@ fn install_cursor_hook(
         handler["matcher"] = json!(matcher);
     }
     array_field(hooks, event, path)?.push(handler);
-    write_json_document(root, path, &document, written)
+    write_json_document(root, path, &document, &mut log.written)
 }
 
 fn install_antigravity_simple_hook(
@@ -878,12 +825,11 @@ fn install_antigravity_simple_hook(
     path: &Path,
     event: &str,
     command: &str,
-    written: &mut Vec<String>,
-    skipped: &mut Vec<String>,
+    log: &mut InstallLog,
 ) -> Result<()> {
     let mut document = read_json_object(path)?;
     if contains_string(&document, command) {
-        record_path(root, path, skipped);
+        record_path(root, path, &mut log.skipped);
         return Ok(());
     }
     let root_object = document.as_object_mut().expect("validated JSON object");
@@ -901,7 +847,7 @@ fn install_antigravity_simple_hook(
         "command": command,
         "timeout": if event == "Stop" { stop_hook_timeout_seconds(root) } else { 5 }
     }));
-    write_json_document(root, path, &document, written)
+    write_json_document(root, path, &document, &mut log.written)
 }
 
 fn install_antigravity_tool_hook(
@@ -909,12 +855,11 @@ fn install_antigravity_tool_hook(
     path: &Path,
     matcher: &str,
     command: &str,
-    written: &mut Vec<String>,
-    skipped: &mut Vec<String>,
+    log: &mut InstallLog,
 ) -> Result<()> {
     let mut document = read_json_object(path)?;
     if contains_string(&document, command) {
-        record_path(root, path, skipped);
+        record_path(root, path, &mut log.skipped);
         return Ok(());
     }
     let root_object = document.as_object_mut().expect("validated JSON object");
@@ -935,7 +880,7 @@ fn install_antigravity_tool_hook(
             "timeout": 5
         }]
     }));
-    write_json_document(root, path, &document, written)
+    write_json_document(root, path, &document, &mut log.written)
 }
 
 fn read_json_object(path: &Path) -> Result<Value> {
@@ -1071,22 +1016,30 @@ fn write_file(
     path: &Path,
     content: &str,
     force: bool,
-    written: &mut Vec<String>,
-    skipped: &mut Vec<String>,
+    log: &mut InstallLog,
 ) -> Result<()> {
     let relative = path
         .strip_prefix(root)
         .unwrap_or(path)
         .display()
         .to_string();
-    if written.contains(&relative) {
+    if log.written.contains(&relative) {
         return Ok(());
     }
-    if path.exists() && !force {
-        if !skipped.contains(&relative) {
-            skipped.push(relative);
+    if path.exists() {
+        // A file matching the bundle needs nothing; one that differs is either
+        // an older release or something the user edited, and only the caller
+        // knows which. Either way it is reported, not quietly replaced.
+        let current = fs::read_to_string(path).unwrap_or_default();
+        if current == content {
+            record(&mut log.skipped, relative);
+            return Ok(());
         }
-        return Ok(());
+        if !force {
+            record(&mut log.outdated, relative.clone());
+            record(&mut log.skipped, relative);
+            return Ok(());
+        }
     }
     let parent = path
         .parent()
@@ -1096,8 +1049,12 @@ fn write_file(
     if !path.exists() {
         bail!("file was not created: {}", path.display());
     }
-    if !written.contains(&relative) {
-        written.push(relative);
-    }
+    record(&mut log.written, relative);
     Ok(())
+}
+
+fn record(records: &mut Vec<String>, value: String) {
+    if !records.contains(&value) {
+        records.push(value);
+    }
 }

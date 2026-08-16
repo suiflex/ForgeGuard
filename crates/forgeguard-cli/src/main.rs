@@ -1381,6 +1381,21 @@ mod tests {
     }
 
     #[test]
+    fn every_menu_entry_declares_what_it_writes() {
+        // agent_menu_rows falls back to an empty summary, so a target added to
+        // AGENT_MENU without an AGENT_SUMMARY entry would render a blank column
+        // instead of failing. Catch that here.
+        for (name, _) in super::AGENT_MENU {
+            assert!(
+                super::AGENT_SUMMARY
+                    .iter()
+                    .any(|(key, summary)| key == name && !summary.is_empty()),
+                "{name} has no menu summary"
+            );
+        }
+    }
+
+    #[test]
     fn menu_rows_round_trip_back_to_targets() {
         let rows = agent_menu_rows();
         let picked = vec![rows[1].clone(), rows[6].clone()];

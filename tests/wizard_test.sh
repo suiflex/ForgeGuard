@@ -17,13 +17,36 @@ if ! command -v script >/dev/null 2>&1; then
 fi
 test -x "$binary" || { echo "error: no binary at $binary" >&2; exit 1; }
 
-# `script` differs between BSD and GNU: BSD takes the command directly, GNU
-# needs -c and puts the file first.
+# `script` differs between BSD and GNU: BSD takes the command as trailing
+# arguments, util-linux needs -c with the command as one string.
+#
+# Detection reads --help rather than probing with a real run: a probe that
+# guesses wrong lands in an interactive shell and hangs CI instead of failing.
+# BSD script rejects long options, so its usage text never mentions --command.
+if script --help 2>&1 | grep -q -- '--command'; then
+    script_flavour="util-linux"
+else
+    script_flavour="bsd"
+fi
+
+# Belt and braces: if the flavour is ever misdetected, fail after a minute
+# rather than hanging the job. `timeout` is absent on a stock macOS.
+if command -v timeout >/dev/null 2>&1; then
+    bounded() { timeout 60 "$@"; }
+else
+    bounded() { "$@"; }
+fi
+
 run_on_pty() {
-    if script -q /dev/null true >/dev/null 2>&1; then
-        script -q /dev/null "$@"
+    if [ "$script_flavour" = "util-linux" ]; then
+        command_string="$1"
+        shift
+        for argument in "$@"; do
+            command_string="$command_string '$argument'"
+        done
+        bounded script -q -e -c "$command_string" /dev/null
     else
-        script -qefc "$*" /dev/null
+        bounded script -q /dev/null "$@"
     fi
 }
 strip_ansi() {
@@ -68,7 +91,9 @@ assert_contains "codex not preselected" "◻ codex"
 # The write summary is grouped rather than one line per file.
 assert_contains "result panel" "installed"
 assert_contains "agents line" "agents   claude, cursor"
-assert_contains "grouped writes" ".claude/ (13 files)"
+# Asserted as a prefix: the point is that the tree collapsed to one line, not
+# how many skill assets ForgeGuard happens to ship this release.
+assert_contains "grouped writes" ".claude/ ("
 
 # Accepting the pre-selection must install exactly those two agents.
 test -f "$project/CLAUDE.md" || { echo "error: CLAUDE.md missing" >&2; exit 1; }

@@ -9,8 +9,8 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use forgeguard_core::{
     config::{ForgeGuardConfig, UpdatePolicy, CONFIG_FILE},
-    create_baseline_with_config, detect_project, evaluate_context_hook, evaluate_scope_hook,
-    evaluate_stop_hook,
+    create_baseline_with_config, detect_installed_agents, detect_project, evaluate_context_hook,
+    evaluate_scope_hook, evaluate_stop_hook,
     git::changed_files,
     initialize_global, initialize_project, mark_task_ready_with_confidence, render_context_hook,
     render_hook_decision, render_scope_warning,
@@ -49,9 +49,11 @@ enum Commands {
         /// Install rules, skills, and hooks for supported agents under the user directory.
         #[arg(long)]
         global: bool,
-        /// Agents to install for. Omit in a terminal to pick interactively.
-        #[arg(long, value_enum)]
-        agent: Option<AgentArg>,
+        /// Agents to install for, comma-separated or repeated. Omit in a terminal
+        /// to pick interactively; omit elsewhere to install only for the agents
+        /// already configured in the target directory.
+        #[arg(long, value_enum, value_delimiter = ',')]
+        agent: Vec<AgentArg>,
         #[arg(long)]
         json: bool,
     },
@@ -141,6 +143,10 @@ enum AgentArg {
     #[value(name = "opencode")]
     OpenCode,
     Antigravity,
+    Windsurf,
+    Copilot,
+    Cline,
+    Roo,
     All,
 }
 
@@ -316,14 +322,32 @@ fn execute() -> Result<ExitCode> {
             json,
         } => {
             // Interactive wizard only when nothing was specified and we own a
-            // terminal. Explicit flags, --json, or a pipe keep the old behavior
-            // (default `all`) so scripts and CI are never prompted.
+            // terminal. Explicit `--agent` always wins and is never second-guessed,
+            // so existing scripts keep working unchanged.
             let interactive =
-                agent.is_none() && !global && !json && std::io::stdout().is_terminal();
+                agent.is_empty() && !global && !json && std::io::stdout().is_terminal();
             let (use_global, agents, add_gitignore) = if interactive {
-                run_init_wizard()?
+                run_init_wizard(&root)?
+            } else if agent.is_empty() {
+                // Nothing specified and nothing to prompt: install for the agents
+                // this directory already uses rather than writing every
+                // integration into a repository that wanted one.
+                let detect_root = if global {
+                    home_directory()?
+                } else {
+                    root.clone()
+                };
+                let detected = detect_installed_agents(&detect_root, global);
+                if detected.is_empty() {
+                    return no_agent_detected(json);
+                }
+                (global, detected, false)
             } else {
-                (global, vec![agent.unwrap_or(AgentArg::All).into()], false)
+                (
+                    global,
+                    agent.into_iter().map(AgentTarget::from).collect(),
+                    false,
+                )
             };
             let options = InitOptions { force, agents };
             if use_global {
@@ -336,6 +360,7 @@ fn execute() -> Result<ExitCode> {
                         "ForgeGuard global skills installed under {}",
                         report.home.display()
                     );
+                    render_agent_selection(&report.agents);
                     render_file_changes(&report.files_written, &report.files_skipped);
                     if io::stdin().is_terminal() {
                         configure_mode_interactive(&home, true)?;
@@ -350,6 +375,7 @@ fn execute() -> Result<ExitCode> {
                     println!("{}", serde_json::to_string_pretty(&report)?);
                 } else {
                     println!("ForgeGuard initialized at {}", root.display());
+                    render_agent_selection(&report.agents);
                     render_file_changes(&report.files_written, &report.files_skipped);
                     if add_gitignore {
                         println!("  ignored .forgeguard/ in .gitignore");
@@ -882,6 +908,10 @@ impl From<AgentArg> for AgentTarget {
             AgentArg::Cursor => Self::Cursor,
             AgentArg::OpenCode => Self::OpenCode,
             AgentArg::Antigravity => Self::Antigravity,
+            AgentArg::Windsurf => Self::Windsurf,
+            AgentArg::Copilot => Self::Copilot,
+            AgentArg::Cline => Self::Cline,
+            AgentArg::Roo => Self::Roo,
             AgentArg::All => Self::All,
         }
     }
@@ -908,20 +938,24 @@ impl From<HookAgentArg> for HookAgent {
     }
 }
 
-/// The five installable agents, in menu order. `AgentArg::All` is offered
-/// separately as the `all` shortcut, so it is not part of this table.
+/// The installable agents, in menu order. `AgentArg::All` is offered separately
+/// as the `all` shortcut, so it is not part of this table.
 const AGENT_MENU: &[(&str, AgentTarget)] = &[
     ("codex", AgentTarget::Codex),
     ("claude", AgentTarget::Claude),
     ("cursor", AgentTarget::Cursor),
     ("opencode", AgentTarget::OpenCode),
     ("antigravity", AgentTarget::Antigravity),
+    ("windsurf", AgentTarget::Windsurf),
+    ("copilot", AgentTarget::Copilot),
+    ("cline", AgentTarget::Cline),
+    ("roo", AgentTarget::Roo),
 ];
 
 const SCOPE_PROJECT: &str = "This repository";
 const SCOPE_GLOBAL: &str = "Global (user directory)";
 
-fn run_init_wizard() -> Result<(bool, Vec<AgentTarget>, bool)> {
+fn run_init_wizard(root: &Path) -> Result<(bool, Vec<AgentTarget>, bool)> {
     let scope = inquire::Select::new(
         "Where do you want to install?",
         vec![SCOPE_PROJECT, SCOPE_GLOBAL],
@@ -930,12 +964,12 @@ fn run_init_wizard() -> Result<(bool, Vec<AgentTarget>, bool)> {
     .context("init wizard cancelled")?;
     let use_global = scope == SCOPE_GLOBAL;
 
-    let names: Vec<&str> = AGENT_MENU.iter().map(|(name, _)| *name).collect();
-    let picked = inquire::MultiSelect::new("Which agents?", names)
-        .with_help_message("↑↓ move, space toggle, → all, ← none, enter confirm")
-        .prompt()
-        .context("init wizard cancelled")?;
-    let agents = agents_from_names(&picked);
+    let detect_root = if use_global {
+        home_directory()?
+    } else {
+        root.to_path_buf()
+    };
+    let agents = prompt_for_agents(&detect_root, use_global)?;
 
     // The gitignore entry only makes sense for a project checkout.
     let add_gitignore = if use_global {
@@ -950,19 +984,46 @@ fn run_init_wizard() -> Result<(bool, Vec<AgentTarget>, bool)> {
     Ok((use_global, agents, add_gitignore))
 }
 
-/// Map the agent names the user checked onto concrete targets. An empty pick
-/// falls back to `All` so confirming nothing never installs nothing.
+/// Ask which agents to install for, with the ones already configured under
+/// `detect_root` pre-checked. An empty pick used to mean "install everything",
+/// which turned a stray Enter into every integration written at once; it now
+/// re-asks and then cancels, because writing nothing is always recoverable.
+fn prompt_for_agents(detect_root: &Path, global: bool) -> Result<Vec<AgentTarget>> {
+    let names: Vec<&str> = AGENT_MENU.iter().map(|(name, _)| *name).collect();
+    let detected = detect_installed_agents(detect_root, global);
+    let defaults: Vec<usize> = AGENT_MENU
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, target))| detected.contains(target))
+        .map(|(index, _)| index)
+        .collect();
+
+    let help = "↑↓ move, space toggle, → all, ← none, enter confirm";
+    for attempt in 0..2 {
+        let picked = inquire::MultiSelect::new("Which agents?", names.clone())
+            .with_default(&defaults)
+            .with_help_message(if attempt == 0 {
+                help
+            } else {
+                "nothing selected — pick at least one, or press Esc to cancel"
+            })
+            .prompt()
+            .context("init wizard cancelled")?;
+        let agents = agents_from_names(&picked);
+        if !agents.is_empty() {
+            return Ok(agents);
+        }
+    }
+    bail!("no agent selected; nothing was installed")
+}
+
+/// Map the agent names the user checked onto concrete targets, in menu order.
 fn agents_from_names(names: &[&str]) -> Vec<AgentTarget> {
-    let selected: Vec<AgentTarget> = AGENT_MENU
+    AGENT_MENU
         .iter()
         .filter(|(name, _)| names.contains(name))
         .map(|(_, target)| *target)
-        .collect();
-    if selected.is_empty() {
-        vec![AgentTarget::All]
-    } else {
-        selected
-    }
+        .collect()
 }
 
 fn home_directory() -> Result<PathBuf> {
@@ -970,6 +1031,50 @@ fn home_directory() -> Result<PathBuf> {
         .or_else(|| env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .context("could not determine the user home directory")
+}
+
+/// Exit code for "I will not guess": no `--agent`, no terminal to ask in, and no
+/// configured agent to infer from. Distinct from `2`, which a blocked gate uses.
+const EXIT_NEEDS_AGENT_SELECTION: u8 = 3;
+
+/// Refuse to install rather than pick every agent by default. A caller that is a
+/// script or another agent reads this and re-runs with an explicit selection.
+fn no_agent_detected(json: bool) -> Result<ExitCode> {
+    let choices: Vec<&str> = AGENT_MENU
+        .iter()
+        .map(|(name, _)| *name)
+        .chain(["all"])
+        .collect();
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "needs_agent_selection": true,
+                "choices": choices,
+            }))?
+        );
+    } else {
+        eprintln!(
+            "no agent configuration detected; nothing was installed.\n\
+             Re-run with an explicit selection, for example:\n  \
+             forgeguard init --agent claude\n  \
+             forgeguard init --agent claude,codex\n\
+             Available: {}",
+            choices.join(", ")
+        );
+    }
+    Ok(ExitCode::from(EXIT_NEEDS_AGENT_SELECTION))
+}
+
+fn render_agent_selection(agents: &[AgentTarget]) {
+    let names: Vec<&str> = AGENT_MENU
+        .iter()
+        .filter(|(_, target)| agents.contains(target))
+        .map(|(name, _)| *name)
+        .collect();
+    if !names.is_empty() {
+        println!("  agents: {}", names.join(", "));
+    }
 }
 
 fn render_file_changes(written: &[String], skipped: &[String]) {
@@ -998,8 +1103,8 @@ mod tests {
     }
 
     #[test]
-    fn empty_pick_defaults_to_all() {
-        assert_eq!(agents_from_names(&[]), vec![AgentTarget::All]);
+    fn empty_pick_installs_nothing() {
+        assert!(agents_from_names(&[]).is_empty());
     }
 
     #[test]

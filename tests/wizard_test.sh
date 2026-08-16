@@ -7,7 +7,18 @@
 set -eu
 
 repository_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-binary="${FORGEGUARD_BINARY:-${repository_root}/target/debug/forgeguard}"
+# Prefer a debug build, which is what a developer has to hand, but fall back to
+# the release one: CI only ever runs `cargo build --release`, and `cargo test`
+# does not leave a plain binary behind.
+binary="${FORGEGUARD_BINARY:-}"
+if [ -z "$binary" ]; then
+    for candidate in debug release; do
+        if [ -x "${repository_root}/target/${candidate}/forgeguard" ]; then
+            binary="${repository_root}/target/${candidate}/forgeguard"
+            break
+        fi
+    done
+fi
 temporary_directory="$(mktemp -d)"
 trap 'rm -rf "$temporary_directory"' EXIT HUP INT TERM
 
@@ -15,7 +26,10 @@ if ! command -v script >/dev/null 2>&1; then
     echo "skip: script(1) is unavailable, cannot allocate a PTY" >&2
     exit 0
 fi
-test -x "$binary" || { echo "error: no binary at $binary" >&2; exit 1; }
+test -n "$binary" && test -x "$binary" || {
+    echo "error: no forgeguard binary under ${repository_root}/target; run 'cargo build' first" >&2
+    exit 1
+}
 
 # `script` differs between BSD and GNU: BSD takes the command as trailing
 # arguments, util-linux needs -c with the command as one string.

@@ -114,6 +114,10 @@ pub enum AgentTarget {
     Cursor,
     OpenCode,
     Antigravity,
+    Windsurf,
+    Copilot,
+    Cline,
+    Roo,
     All,
 }
 
@@ -135,6 +139,8 @@ impl Default for InitOptions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InitReport {
     pub detection: ProjectDetection,
+    /// The targets actually installed, with `All` already expanded.
+    pub agents: Vec<AgentTarget>,
     pub files_written: Vec<String>,
     pub files_skipped: Vec<String>,
 }
@@ -142,6 +148,7 @@ pub struct InitReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalInitReport {
     pub home: PathBuf,
+    pub agents: Vec<AgentTarget>,
     pub files_written: Vec<String>,
     pub files_skipped: Vec<String>,
 }
@@ -158,7 +165,62 @@ const ALL_AGENT_TARGETS: &[AgentTarget] = &[
     AgentTarget::Cursor,
     AgentTarget::OpenCode,
     AgentTarget::Antigravity,
+    AgentTarget::Windsurf,
+    AgentTarget::Copilot,
+    AgentTarget::Cline,
+    AgentTarget::Roo,
 ];
+
+/// Paths that show an agent is actually used here, checked in the order of
+/// `ALL_AGENT_TARGETS`. A target matches when any of its markers exists.
+///
+/// Markers are the agent's own configuration, never ForgeGuard's output, so a
+/// repository that has never run `init` still reports the agents it uses.
+const PROJECT_AGENT_MARKERS: &[(AgentTarget, &[&str])] = &[
+    (AgentTarget::Codex, &[".codex"]),
+    (AgentTarget::Claude, &[".claude"]),
+    (AgentTarget::Cursor, &[".cursor", ".cursorrules"]),
+    (AgentTarget::OpenCode, &[".opencode", "opencode.json"]),
+    (AgentTarget::Antigravity, &[".agents", ".agent"]),
+    (
+        AgentTarget::Windsurf,
+        &[".windsurf", ".devin", ".windsurfrules"],
+    ),
+    (
+        AgentTarget::Copilot,
+        &[".github/copilot-instructions.md", ".github/instructions"],
+    ),
+    (AgentTarget::Cline, &[".clinerules"]),
+    (AgentTarget::Roo, &[".roo", ".roorules"]),
+];
+
+/// Home-directory equivalents of `PROJECT_AGENT_MARKERS`. Cline and Copilot have
+/// no documented user-level rules directory, so they are absent here rather than
+/// guessed at.
+const GLOBAL_AGENT_MARKERS: &[(AgentTarget, &[&str])] = &[
+    (AgentTarget::Codex, &[".codex"]),
+    (AgentTarget::Claude, &[".claude"]),
+    (AgentTarget::Cursor, &[".cursor"]),
+    (AgentTarget::OpenCode, &[".config/opencode"]),
+    (AgentTarget::Antigravity, &[".gemini"]),
+    (AgentTarget::Windsurf, &[".codeium/windsurf", ".devin"]),
+    (AgentTarget::Roo, &[".roo"]),
+];
+
+/// Report which agents leave configuration under `root`, so `init` can install
+/// for those alone instead of writing every integration into every repository.
+pub fn detect_installed_agents(root: &Path, global: bool) -> Vec<AgentTarget> {
+    let markers = if global {
+        GLOBAL_AGENT_MARKERS
+    } else {
+        PROJECT_AGENT_MARKERS
+    };
+    markers
+        .iter()
+        .filter(|(_, paths)| paths.iter().any(|path| root.join(path).exists()))
+        .map(|(target, _)| *target)
+        .collect()
+}
 
 pub fn initialize_global(home: &Path, options: &InitOptions) -> Result<GlobalInitReport> {
     let home = home
@@ -178,6 +240,7 @@ pub fn initialize_global(home: &Path, options: &InitOptions) -> Result<GlobalIni
 
     Ok(GlobalInitReport {
         home,
+        agents: expand_agent_targets(&options.agents),
         files_written,
         files_skipped,
     })
@@ -222,6 +285,7 @@ pub fn initialize_project(root: &Path, options: &InitOptions) -> Result<InitRepo
 
     Ok(InitReport {
         detection,
+        agents: expand_agent_targets(&options.agents),
         files_written,
         files_skipped,
     })
@@ -242,6 +306,10 @@ fn install_agents(
             AgentTarget::Cursor => install_cursor(root, scope, force, written, skipped)?,
             AgentTarget::OpenCode => install_opencode(root, scope, force, written, skipped)?,
             AgentTarget::Antigravity => install_antigravity(root, scope, force, written, skipped)?,
+            AgentTarget::Windsurf
+            | AgentTarget::Copilot
+            | AgentTarget::Cline
+            | AgentTarget::Roo => install_agents_md(root, scope, force, written, skipped)?,
             AgentTarget::All => unreachable!("all is expanded before installation"),
         }
     }
@@ -580,6 +648,25 @@ fn install_antigravity(
         written,
         skipped,
     )
+}
+
+/// Windsurf, Copilot, Cline, and Roo all read `AGENTS.md` natively and expose no
+/// hook API ForgeGuard can drive, so supporting them costs one shared policy file
+/// and nothing else. They do not receive the engineering skill: none of them has a
+/// documented skill directory, and writing four near-duplicate rules files is the
+/// clutter this selection work exists to remove.
+fn install_agents_md(
+    root: &Path,
+    scope: InstallScope,
+    force: bool,
+    written: &mut Vec<String>,
+    skipped: &mut Vec<String>,
+) -> Result<()> {
+    let policy_path = match scope {
+        InstallScope::Project => root.join("AGENTS.md"),
+        InstallScope::Global => root.join(".agents/AGENTS.md"),
+    };
+    write_file(root, &policy_path, AGENTS_TEMPLATE, force, written, skipped)
 }
 
 fn install_skill(

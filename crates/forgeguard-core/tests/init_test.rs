@@ -1,6 +1,8 @@
 use std::fs;
 
-use forgeguard_core::{initialize_project, AgentTarget, ForgeGuardConfig, InitOptions};
+use forgeguard_core::{
+    detect_installed_agents, initialize_project, AgentTarget, ForgeGuardConfig, InitOptions,
+};
 use tempfile::tempdir;
 
 #[test]
@@ -543,4 +545,93 @@ fn force_unlinks_legacy_symlink_without_removing_target() {
 
     assert!(!legacy.exists());
     assert!(target.join("keep.txt").exists());
+}
+
+#[test]
+fn detects_only_agents_with_configuration_present() {
+    let directory = tempdir().expect("temp directory");
+
+    assert!(detect_installed_agents(directory.path(), false).is_empty());
+
+    fs::create_dir_all(directory.path().join(".claude")).expect("create .claude");
+    fs::create_dir_all(directory.path().join(".roo/rules")).expect("create .roo/rules");
+    fs::create_dir_all(directory.path().join(".github")).expect("create .github");
+    fs::write(
+        directory.path().join(".github/copilot-instructions.md"),
+        "# rules\n",
+    )
+    .expect("write copilot instructions");
+
+    let detected = detect_installed_agents(directory.path(), false);
+
+    assert_eq!(
+        detected,
+        vec![AgentTarget::Claude, AgentTarget::Copilot, AgentTarget::Roo]
+    );
+}
+
+#[test]
+fn agents_md_only_targets_write_no_extra_directories() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("Cargo.toml"),
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write manifest");
+
+    let report = initialize_project(
+        directory.path(),
+        &InitOptions {
+            force: false,
+            agents: vec![
+                AgentTarget::Windsurf,
+                AgentTarget::Copilot,
+                AgentTarget::Cline,
+                AgentTarget::Roo,
+            ],
+        },
+    )
+    .expect("install AGENTS.md-only targets");
+
+    // One shared policy file plus ForgeGuard's own config, and nothing else:
+    // these four agents read AGENTS.md natively and expose no hook API.
+    assert_eq!(
+        report.files_written,
+        vec![
+            ".forgeguard/config.toml".to_owned(),
+            ".forgeguard/.gitignore".to_owned(),
+            "AGENTS.md".to_owned(),
+        ]
+    );
+    for unexpected in [".windsurf", ".clinerules", ".roo", ".github", ".agents"] {
+        assert!(
+            !directory.path().join(unexpected).exists(),
+            "{unexpected} should not be created"
+        );
+    }
+}
+
+#[test]
+fn force_prunes_the_superseded_global_antigravity_skill_directory() {
+    let directory = tempdir().expect("temp directory");
+    let obsolete = directory
+        .path()
+        .join(".gemini/config/skills/forgeguard-engineering");
+    fs::create_dir_all(&obsolete).expect("seed obsolete skill directory");
+    fs::write(obsolete.join("SKILL.md"), "stale\n").expect("write stale skill");
+
+    forgeguard_core::initialize_global(
+        directory.path(),
+        &InitOptions {
+            force: true,
+            agents: vec![AgentTarget::Antigravity],
+        },
+    )
+    .expect("refresh global antigravity install");
+
+    assert!(!obsolete.exists());
+    assert!(directory
+        .path()
+        .join(".gemini/antigravity-cli/skills/forgeguard-engineering/SKILL.md")
+        .exists());
 }

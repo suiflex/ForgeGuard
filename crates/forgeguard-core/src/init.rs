@@ -1026,6 +1026,14 @@ fn write_file(
     if log.written.contains(&relative) {
         return Ok(());
     }
+    // A symlink belongs to whoever made it. Writing through one edits the file
+    // at the other end instead: a repository that points AGENTS.md at CLAUDE.md
+    // would have its CLAUDE.md replaced by the AGENTS template, and the consent
+    // prompt would have named the wrong file. Leave it, and say so.
+    if fs::symlink_metadata(path).is_ok_and(|entry| entry.file_type().is_symlink()) {
+        record(&mut log.skipped, relative);
+        return Ok(());
+    }
     if path.exists() {
         // A file matching the bundle needs nothing; one that differs is either
         // an older release or something the user edited, and only the caller

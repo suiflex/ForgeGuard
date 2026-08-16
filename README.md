@@ -238,7 +238,9 @@ forgeguard init --refresh    # replace the drifted files, no prompt
 forgeguard init --force      # replace every ForgeGuard-owned file, drifted or not
 ```
 
-Neither flag touches `.forgeguard/config.toml`.
+Neither flag touches `.forgeguard/config.toml`, and neither writes through a symlink: a
+repository that points `AGENTS.md` at `CLAUDE.md` keeps both as they are, because replacing
+the link would edit the file at the other end.
 
 ## Quick start
 
@@ -500,7 +502,7 @@ When run in a terminal without an explicit mode, `forgeguard mode` opens the sam
 
 | Command | Purpose |
 |---|---|
-| `forgeguard init` | Install project configuration and agent skills for the detected agents. Use `--agent` to select explicitly, `--global` for user-level skills. |
+| `forgeguard init` | Install project configuration and agent skills for the detected agents. Use `--agent` to select explicitly, `--global` for user-level skills, `--refresh` to replace drifted files. |
 | `forgeguard detect` | Detect languages, frameworks, database tools, tests, and commands. |
 | `forgeguard capabilities` | Show workflow, parser, structural-rule, and semantic-pack coverage. |
 | `forgeguard doctor` | Verify configuration, Git, and required local tools. |

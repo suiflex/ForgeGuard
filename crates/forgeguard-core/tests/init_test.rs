@@ -836,3 +836,39 @@ fn force_reinstalls_files_but_keeps_configuration() {
         "hand written\n"
     );
 }
+
+#[test]
+fn a_symlinked_policy_file_is_never_written_through() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("Cargo.toml"),
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write manifest");
+    // Pointing AGENTS.md at CLAUDE.md is a common way to keep one policy file.
+    fs::write(directory.path().join("CLAUDE.md"), "hand written\n").expect("seed policy");
+    std::os::unix::fs::symlink("CLAUDE.md", directory.path().join("AGENTS.md"))
+        .expect("link AGENTS.md at CLAUDE.md");
+
+    initialize_project(
+        directory.path(),
+        &InitOptions {
+            force: true,
+            refresh: false,
+            agents: vec![AgentTarget::Codex],
+        },
+    )
+    .expect("install for codex");
+
+    // Writing the Codex policy through the link would replace the file at the
+    // other end, and the refresh prompt would have named AGENTS.md while
+    // destroying CLAUDE.md.
+    assert_eq!(
+        fs::read_to_string(directory.path().join("CLAUDE.md")).expect("read policy"),
+        "hand written\n"
+    );
+    assert!(fs::symlink_metadata(directory.path().join("AGENTS.md"))
+        .expect("stat link")
+        .file_type()
+        .is_symlink());
+}

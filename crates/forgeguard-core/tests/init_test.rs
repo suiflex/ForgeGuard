@@ -837,6 +837,7 @@ fn force_reinstalls_files_but_keeps_configuration() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_symlinked_policy_file_is_never_written_through() {
     let directory = tempdir().expect("temp directory");

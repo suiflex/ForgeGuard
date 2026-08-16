@@ -635,3 +635,31 @@ fn force_prunes_the_superseded_global_antigravity_skill_directory() {
         .join(".gemini/antigravity-cli/skills/forgeguard-engineering/SKILL.md")
         .exists());
 }
+
+#[test]
+fn detection_is_stable_across_repeated_initialization() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("Cargo.toml"),
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write manifest");
+    fs::create_dir_all(directory.path().join(".codex")).expect("create .codex");
+
+    let first = detect_installed_agents(directory.path(), false);
+    assert_eq!(first, vec![AgentTarget::Codex]);
+
+    initialize_project(
+        directory.path(),
+        &InitOptions {
+            force: false,
+            agents: first.clone(),
+        },
+    )
+    .expect("install for codex");
+
+    // Codex shares `.agents/skills` with Cursor and OpenCode, so ForgeGuard's own
+    // output must not make the next run believe Antigravity is in use too.
+    assert!(directory.path().join(".agents/skills").exists());
+    assert_eq!(detect_installed_agents(directory.path(), false), first);
+}

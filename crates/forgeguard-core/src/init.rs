@@ -174,14 +174,21 @@ const ALL_AGENT_TARGETS: &[AgentTarget] = &[
 /// Paths that show an agent is actually used here, checked in the order of
 /// `ALL_AGENT_TARGETS`. A target matches when any of its markers exists.
 ///
-/// Markers are the agent's own configuration, never ForgeGuard's output, so a
-/// repository that has never run `init` still reports the agents it uses.
+/// Markers are the agent's own configuration, so a repository that has never run
+/// `init` still reports the agents it uses. Where ForgeGuard writes into the same
+/// tree it only ever does so for that agent's own target, which keeps a repeat
+/// `init` on the same selection. `.agents/skills` is deliberately *not* a marker:
+/// Codex, Cursor, and OpenCode share it, so treating it as one would make every
+/// re-run silently add Antigravity.
 const PROJECT_AGENT_MARKERS: &[(AgentTarget, &[&str])] = &[
     (AgentTarget::Codex, &[".codex"]),
     (AgentTarget::Claude, &[".claude"]),
     (AgentTarget::Cursor, &[".cursor", ".cursorrules"]),
     (AgentTarget::OpenCode, &[".opencode", "opencode.json"]),
-    (AgentTarget::Antigravity, &[".agents", ".agent"]),
+    (
+        AgentTarget::Antigravity,
+        &[".agents/rules", ".agents/hooks.json", ".agent/rules"],
+    ),
     (
         AgentTarget::Windsurf,
         &[".windsurf", ".devin", ".windsurfrules"],

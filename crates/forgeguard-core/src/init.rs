@@ -319,20 +319,20 @@ fn install_agents(
     root: &Path,
     scope: InstallScope,
     requested: &[AgentTarget],
-    force: bool,
+    overwrite: bool,
     log: &mut InstallLog,
 ) -> Result<()> {
     for target in expand_agent_targets(requested) {
         match target {
-            AgentTarget::Codex => install_codex(root, scope, force, log)?,
-            AgentTarget::Claude => install_claude(root, scope, force, log)?,
-            AgentTarget::Cursor => install_cursor(root, scope, force, log)?,
-            AgentTarget::OpenCode => install_opencode(root, scope, force, log)?,
-            AgentTarget::Antigravity => install_antigravity(root, scope, force, log)?,
+            AgentTarget::Codex => install_codex(root, scope, overwrite, log)?,
+            AgentTarget::Claude => install_claude(root, scope, overwrite, log)?,
+            AgentTarget::Cursor => install_cursor(root, scope, overwrite, log)?,
+            AgentTarget::OpenCode => install_opencode(root, scope, overwrite, log)?,
+            AgentTarget::Antigravity => install_antigravity(root, scope, overwrite, log)?,
             AgentTarget::Windsurf
             | AgentTarget::Copilot
             | AgentTarget::Cline
-            | AgentTarget::Roo => install_agents_md(root, target, scope, force, log)?,
+            | AgentTarget::Roo => install_agents_md(root, target, scope, overwrite, log)?,
             AgentTarget::All => unreachable!("all is expanded before installation"),
         }
     }
@@ -436,18 +436,23 @@ fn write_config(root: &Path, config: &ForgeGuardConfig, log: &mut InstallLog) ->
 fn install_codex(
     root: &Path,
     scope: InstallScope,
-    force: bool,
+    overwrite: bool,
     log: &mut InstallLog,
 ) -> Result<()> {
-    if force {
+    if overwrite {
         remove_legacy_skills(root, ".codex/skills", true)?;
     }
     let policy_path = match scope {
         InstallScope::Project => root.join("AGENTS.md"),
         InstallScope::Global => root.join(".codex/AGENTS.md"),
     };
-    write_file(root, &policy_path, AGENTS_TEMPLATE, force, log)?;
-    install_skill(root, ".agents/skills/forgeguard-engineering", force, log)?;
+    write_file(root, &policy_path, AGENTS_TEMPLATE, overwrite, log)?;
+    install_skill(
+        root,
+        ".agents/skills/forgeguard-engineering",
+        overwrite,
+        log,
+    )?;
     install_grouped_hook(
         root,
         &root.join(".codex/hooks.json"),
@@ -477,18 +482,23 @@ fn install_codex(
 fn install_claude(
     root: &Path,
     scope: InstallScope,
-    force: bool,
+    overwrite: bool,
     log: &mut InstallLog,
 ) -> Result<()> {
-    if force {
+    if overwrite {
         remove_legacy_skills(root, ".claude/skills", false)?;
     }
     let policy_path = match scope {
         InstallScope::Project => root.join("CLAUDE.md"),
         InstallScope::Global => root.join(".claude/CLAUDE.md"),
     };
-    write_file(root, &policy_path, CLAUDE_TEMPLATE, force, log)?;
-    install_skill(root, ".claude/skills/forgeguard-engineering", force, log)?;
+    write_file(root, &policy_path, CLAUDE_TEMPLATE, overwrite, log)?;
+    install_skill(
+        root,
+        ".claude/skills/forgeguard-engineering",
+        overwrite,
+        log,
+    )?;
     install_grouped_hook(
         root,
         &root.join(".claude/settings.json"),
@@ -526,15 +536,20 @@ fn install_claude(
 fn install_cursor(
     root: &Path,
     scope: InstallScope,
-    force: bool,
+    overwrite: bool,
     log: &mut InstallLog,
 ) -> Result<()> {
     let rule_path = match scope {
         InstallScope::Project => root.join(".cursor/rules/forgeguard.mdc"),
         InstallScope::Global => root.join(".cursor/rules/forgeguard.mdc"),
     };
-    write_file(root, &rule_path, CURSOR_TEMPLATE, force, log)?;
-    install_skill(root, ".agents/skills/forgeguard-engineering", force, log)?;
+    write_file(root, &rule_path, CURSOR_TEMPLATE, overwrite, log)?;
+    install_skill(
+        root,
+        ".agents/skills/forgeguard-engineering",
+        overwrite,
+        log,
+    )?;
     let path = root.join(".cursor/hooks.json");
     install_cursor_hook(root, &path, "stop", None, CURSOR_HOOK_COMMAND, log)?;
     install_cursor_hook(
@@ -558,7 +573,7 @@ fn install_cursor(
 fn install_opencode(
     root: &Path,
     scope: InstallScope,
-    force: bool,
+    overwrite: bool,
     log: &mut InstallLog,
 ) -> Result<()> {
     let (policy_path, skill_directory) = match scope {
@@ -571,14 +586,14 @@ fn install_opencode(
             ".config/opencode/skills/forgeguard-engineering",
         ),
     };
-    write_file(root, &policy_path, AGENTS_TEMPLATE, force, log)?;
-    install_skill(root, skill_directory, force, log)
+    write_file(root, &policy_path, AGENTS_TEMPLATE, overwrite, log)?;
+    install_skill(root, skill_directory, overwrite, log)
 }
 
 fn install_antigravity(
     root: &Path,
     scope: InstallScope,
-    force: bool,
+    overwrite: bool,
     log: &mut InstallLog,
 ) -> Result<()> {
     let (policy_path, skill_directory) = match scope {
@@ -591,11 +606,11 @@ fn install_antigravity(
             GLOBAL_ANTIGRAVITY_SKILL_DIRECTORY,
         ),
     };
-    if force {
+    if overwrite {
         remove_directory(root, OBSOLETE_GLOBAL_ANTIGRAVITY_SKILL_DIRECTORY)?;
     }
-    write_file(root, &policy_path, AGENTS_TEMPLATE, force, log)?;
-    install_skill(root, skill_directory, force, log)?;
+    write_file(root, &policy_path, AGENTS_TEMPLATE, overwrite, log)?;
+    install_skill(root, skill_directory, overwrite, log)?;
 
     // Only the workspace agent has a documented local hook file. Antigravity
     // publishes no user-level hook path, so a global install stops at rules and
@@ -634,7 +649,7 @@ fn install_agents_md(
     root: &Path,
     target: AgentTarget,
     scope: InstallScope,
-    force: bool,
+    overwrite: bool,
     log: &mut InstallLog,
 ) -> Result<()> {
     let relative = match scope {
@@ -644,7 +659,7 @@ fn install_agents_md(
             None => return Ok(()),
         },
     };
-    write_file(root, &root.join(relative), AGENTS_TEMPLATE, force, log)
+    write_file(root, &root.join(relative), AGENTS_TEMPLATE, overwrite, log)
 }
 
 /// Where each `AGENTS.md`-only agent reads user-level rules from. `None` means the
@@ -663,12 +678,17 @@ fn global_policy_path(target: AgentTarget) -> Option<&'static str> {
     }
 }
 
-fn install_skill(root: &Path, directory: &str, force: bool, log: &mut InstallLog) -> Result<()> {
+fn install_skill(
+    root: &Path,
+    directory: &str,
+    overwrite: bool,
+    log: &mut InstallLog,
+) -> Result<()> {
     for (relative, content) in SKILL_ASSETS {
         let path = root.join(directory).join(relative);
-        write_file(root, &path, content, force, log)?;
+        write_file(root, &path, content, overwrite, log)?;
     }
-    if force {
+    if overwrite {
         remove_obsolete_skill_assets(root, directory)?;
     }
     Ok(())
@@ -1015,7 +1035,7 @@ fn write_file(
     root: &Path,
     path: &Path,
     content: &str,
-    force: bool,
+    overwrite: bool,
     log: &mut InstallLog,
 ) -> Result<()> {
     let relative = path
@@ -1043,7 +1063,7 @@ fn write_file(
             record(&mut log.skipped, relative);
             return Ok(());
         }
-        if !force {
+        if !overwrite {
             record(&mut log.outdated, relative.clone());
             record(&mut log.skipped, relative);
             return Ok(());

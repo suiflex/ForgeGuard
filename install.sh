@@ -115,4 +115,4 @@ fi
 echo
 echo "ForgeGuard installed: ${install_directory}/forgeguard"
 echo "Restart terminal, then run inside a repository:"
-echo "  forgeguard init --agent all"
+echo "  forgeguard init"

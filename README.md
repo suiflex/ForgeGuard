@@ -98,9 +98,12 @@ Restart the terminal after installation. Then initialize any repository:
 
 ```bash
 cd your-project
-forgeguard init --agent all
+forgeguard init
 forgeguard doctor
 ```
+
+`forgeguard init` installs only for the agents that directory already uses. See
+[Choosing agents](#choosing-agents) for how the selection is made.
 
 Installers use GitHub Release binaries produced for Linux, macOS, and Windows on x86-64 and ARM64. Advanced users building unreleased source can still use:
 
@@ -197,12 +200,16 @@ bundle into a repository that was set up by an older version:
 
 ```bash
 cd your-project
-forgeguard init --agent all --force
+forgeguard init --force
 forgeguard doctor
 ```
 
 `--force` overwrites the ForgeGuard-owned policy and skill files and prunes obsolete
-role-skill directories.
+role-skill directories. For global installs it also relocates the Antigravity skill from
+the superseded `~/.gemini/config/skills/` to `~/.gemini/antigravity-cli/skills/`, the path
+[Antigravity CLI documents](https://antigravity.google/docs/cli/gcli-migration). ForgeGuard
+no longer writes a user-level Antigravity hook file, because none is documented; the
+workspace `.agents/hooks.json` gate is unchanged.
 
 > **Warning:** `--force` also regenerates `.forgeguard/config.toml` from detection defaults,
 > resetting any custom commands and operating mode. If you customized the config, back it up
@@ -217,7 +224,7 @@ forgeguard init --global --agent all
 
 cd your-project
 forgeguard detect
-forgeguard init --agent all
+forgeguard init
 forgeguard doctor
 forgeguard gate
 ```
@@ -265,42 +272,82 @@ forgeguard baseline create --force
 
 ## Generated project structure
 
+Only the selected agents are written. A repository that uses Claude Code alone gets:
+
 ```text
 your-project/
 ├── .forgeguard/config.toml
 ├── .forgeguard/baseline.json  # after `forgeguard baseline create`
 ├── .forgeguard/.gitignore
-├── AGENTS.md
 ├── CLAUDE.md
-├── .codex/hooks.json
 ├── .claude/settings.json
-├── .cursor/hooks.json
-├── .cursor/rules/forgeguard.mdc
-├── .agents/hooks.json
-├── .agents/rules/forgeguard.md
-├── .agents/skills/forgeguard-engineering/
-│   ├── SKILL.md
-│   └── references/
 └── .claude/skills/forgeguard-engineering/
     ├── SKILL.md
     └── references/
 ```
 
+Adding a target adds only its own files: `--agent codex` contributes `AGENTS.md`,
+`.codex/hooks.json`, and `.agents/skills/`; `--agent cursor` contributes
+`.cursor/rules/forgeguard.mdc`, `.cursor/hooks.json`, and `.agents/skills/`;
+`--agent antigravity` contributes `.agents/rules/forgeguard.md` and `.agents/hooks.json`.
+
 Existing policy and skill files are not overwritten unless `--force` is supplied. Hook installation merges one ForgeGuard entry into existing JSON and preserves unrelated settings. Global installation writes ForgeGuard-owned skills, compact policies, and hook entries for selected agents. `--force` also removes obsolete ForgeGuard-owned role-skill directories without touching unrelated skills.
 
 When a project `.gitignore` already exists, `forgeguard init` appends the generated directories for
 the selected agents (`.codex/`, `.claude/`, `.cursor/`, and/or `.agents/`). It preserves existing
-patterns, avoids duplicate entries, and does not create a root `.gitignore`.
+patterns, avoids duplicate entries, and does not create a root `.gitignore`. The `AGENTS.md`-only
+targets add no directory, so they add no ignore entry.
+
+## Choosing agents
+
+`forgeguard init` decides which integrations to write in one of three ways:
+
+1. **Explicit `--agent`** always wins and is never second-guessed. It accepts a
+   comma-separated list or a repeated flag, plus the `all` shortcut:
+
+   ```bash
+   forgeguard init --agent claude
+   forgeguard init --agent claude,codex
+   forgeguard init --agent all
+   ```
+
+2. **A terminal with no `--agent`** opens the interactive picker, with the agents
+   already configured in the directory pre-checked. Confirming an empty selection
+   installs nothing rather than everything.
+
+3. **No terminal and no `--agent`** — a script, CI job, or another agent shelling out —
+   installs only for the agents whose own configuration is already present
+   (`.claude/`, `.codex/`, `.cursor/`, `.agents/`, `.windsurf/`, `.clinerules/`,
+   `.roo/`, `.github/copilot-instructions.md`, and their user-directory equivalents
+   under `--global`).
+
+   When nothing is detected, `init` writes nothing and exits **3** with the available
+   choices on stderr, so a caller re-runs with an explicit selection instead of
+   receiving every integration at once. With `--json`, it prints
+   `{"needs_agent_selection": true, "choices": [...]}` instead. Exit code `2` still
+   means a blocked gate.
+
+Both report formats include the resolved `agents` list, so the output always states
+what was installed.
 
 ## Agent support
 
-| Agent | Rules | Skill | Automatic completion gate |
-|---|---|---|---|
-| Codex | `AGENTS.md` | `.agents/skills` | `Stop` hook |
-| Claude Code | `CLAUDE.md` | `.claude/skills` | `Stop` hook |
-| Cursor | `.cursor/rules` | `.agents/skills` | `stop` hook |
-| Antigravity | `.agents/rules` | `.agents/skills` | Native `Stop` hook |
-| OpenCode | `AGENTS.md` | `.agents/skills` | Policy-enforced gate |
+| Agent | `--agent` | Rules | Skill | Automatic completion gate |
+|---|---|---|---|---|
+| Codex | `codex` | `AGENTS.md` | `.agents/skills` | `Stop` hook |
+| Claude Code | `claude` | `CLAUDE.md` | `.claude/skills` | `Stop` hook |
+| Cursor | `cursor` | `.cursor/rules` | `.agents/skills` | `stop` hook |
+| Antigravity | `antigravity` | `.agents/rules` | `.agents/skills` | Native `Stop` hook |
+| OpenCode | `opencode` | `AGENTS.md` | `.agents/skills` | Policy-enforced gate |
+| Windsurf / Devin | `windsurf` | `AGENTS.md` | — | Policy-enforced gate |
+| GitHub Copilot | `copilot` | `AGENTS.md` | — | Policy-enforced gate |
+| Cline | `cline` | `AGENTS.md` | — | Policy-enforced gate |
+| Roo Code | `roo` | `AGENTS.md` | — | Policy-enforced gate |
+
+The last four read [`AGENTS.md`](https://agents.md/) natively, so ForgeGuard supports them
+with that one file and writes nothing under `.windsurf/`, `.github/`, `.clinerules/`, or
+`.roo/`. None of them exposes a hook API ForgeGuard can drive, and none has a documented
+skill directory, so they receive the policy but not the engineering skill.
 
 [OpenCode officially discovers](https://opencode.ai/docs/skills) both `AGENTS.md` and `.agents/skills`. Its current plugin lifecycle exposes `session.idle` only after the agent loop stops, so ForgeGuard does not claim a reliable blocking `Stop` hook there. The compact policy requires `forgeguard gate --changed --output compact` before completion. [Antigravity provides a native blocking `Stop` protocol](https://antigravity.google/docs/hooks), so failures automatically return the agent to its execution loop.
 
@@ -410,7 +457,7 @@ When run in a terminal without an explicit mode, `forgeguard mode` opens the sam
 
 | Command | Purpose |
 |---|---|
-| `forgeguard init` | Install project configuration and agent skills. Use `--global` for user-level skills. |
+| `forgeguard init` | Install project configuration and agent skills for the detected agents. Use `--agent` to select explicitly, `--global` for user-level skills. |
 | `forgeguard detect` | Detect languages, frameworks, database tools, tests, and commands. |
 | `forgeguard capabilities` | Show workflow, parser, structural-rule, and semantic-pack coverage. |
 | `forgeguard doctor` | Verify configuration, Git, and required local tools. |

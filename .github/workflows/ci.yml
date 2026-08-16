@@ -34,6 +34,8 @@ jobs:
       - run: cargo build --locked --workspace --release
       - run: sh -n install.sh
       - run: sh tests/install_test.sh
+      - name: Interactive init wizard (PTY)
+        run: sh tests/wizard_test.sh
       - name: Parse PowerShell installer
         shell: pwsh
         run: |

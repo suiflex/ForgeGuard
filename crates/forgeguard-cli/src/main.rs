@@ -1198,24 +1198,82 @@ mod theme {
         }
     }
 
-    /// Boxed wordmark. The icon is an outlined mini-box holding an anvil mark —
-    /// ForgeGuard forges the guardrails an agent works inside. Box-drawing
-    /// characters, not filled blocks, which render as a blob at small sizes.
+    /// The shield-and-hammer mark from `assets/brand/logo-mark.svg`, sampled to
+    /// twelve by twelve. `g` is the shield, `d` the hammer struck through it, a
+    /// space is outside the mark. Regenerate with `sh tests/logo.sh`.
+    const LOGO: [&str; 12] = [
+        "gdgggggggggg",
+        "dddggggggggg",
+        "ggddddgggggg",
+        "ggggggdggggg",
+        "gggggggdgggg",
+        "gggggggdgggg",
+        "ggggdddggggg",
+        "ggggdggggggg",
+        " ggggdddddg ",
+        "  ggggggdg  ",
+        "   gggggd   ",
+        "     gg     ",
+    ];
+    const SHIELD: &str = "\x1b[38;5;114m";
+    const SHIELD_BG: &str = "\x1b[48;5;114m";
+    const STRUCK: &str = "\x1b[38;5;234m";
+    const STRUCK_BG: &str = "\x1b[48;5;234m";
+    const DEFAULT_BG: &str = "\x1b[49m";
+
+    /// Draw the mark two pixel rows per line: `▀` paints the upper half in the
+    /// foreground and the lower half in the background, so a text cell carries
+    /// two pixels. Anything outside the mark keeps the terminal's own
+    /// background rather than punching a coloured hole in it.
+    fn logo_rows() -> Vec<String> {
+        let cell = |upper: u8, lower: u8| match (upper, lower) {
+            (b' ', b' ') => " ".to_owned(),
+            (b' ', lower) => {
+                let colour = if lower == b'g' { SHIELD } else { STRUCK };
+                format!("{colour}{DEFAULT_BG}▄{RESET}")
+            }
+            (upper, b' ') => {
+                let colour = if upper == b'g' { SHIELD } else { STRUCK };
+                format!("{colour}{DEFAULT_BG}▀{RESET}")
+            }
+            (upper, lower) => {
+                let top = if upper == b'g' { SHIELD } else { STRUCK };
+                let bottom = if lower == b'g' { SHIELD_BG } else { STRUCK_BG };
+                format!("{top}{bottom}▀{RESET}")
+            }
+        };
+        LOGO.chunks(2)
+            .map(|pair| {
+                let upper = pair[0].as_bytes();
+                let lower = pair[1].as_bytes();
+                (0..upper.len())
+                    .map(|column| cell(upper[column], lower[column]))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The mark beside the wordmark, split the way the logo splits it: `Forge`
+    /// plain, `Guard` in the accent. Falls back to plain text whenever colour is
+    /// off, because the mark is made of colour and would otherwise be a smear of
+    /// half-blocks.
     pub(super) fn banner() -> String {
-        let rows = ["┌───┐", "│ ⌂ │  F O R G E G U A R D", "└───┘"];
-        let width = rows
-            .iter()
-            .map(|row| row.chars().count())
-            .max()
-            .unwrap_or(0)
-            + 4;
-        let mut out = vec![format!("┌{}┐", "─".repeat(width))];
-        for row in rows {
-            let pad = width - 4 - row.chars().count();
-            out.push(format!("│  {row}{}  │", " ".repeat(pad)));
+        if !enabled() {
+            return "ForgeGuard".to_owned();
         }
-        out.push(format!("└{}┘", "─".repeat(width)));
-        paint(ACCENT, &out.join("\n"))
+        let wordmark = format!("{BOLD_FG}Forge{RESET}{ACCENT}Guard{RESET}");
+        logo_rows()
+            .into_iter()
+            .enumerate()
+            .map(|(index, row)| {
+                if index == 2 {
+                    format!("  {row}   {wordmark}")
+                } else {
+                    format!("  {row}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// A row that sits on the connector column, marker at column zero.

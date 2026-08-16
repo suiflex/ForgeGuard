@@ -77,8 +77,15 @@ assert_contains() {
     fi
 }
 
-# The wizard ran at all.
-assert_contains "banner" "F O R G E G U A R D"
+# The wizard ran at all, and the banner drew the brand mark: half-blocks in the
+# shield colour, not just the wordmark next to them.
+assert_contains "wordmark" "ForgeGuard"
+for expected in '▀' '38;5;114'; do
+    if ! grep -qF "$expected" "$transcript"; then
+        echo "error: banner did not render the logo mark: $expected" >&2
+        exit 1
+    fi
+done
 # Detection reported both agents before the picker.
 assert_contains "detection step" "claude, cursor"
 # Rows carry what each target installs, not just a bare name.

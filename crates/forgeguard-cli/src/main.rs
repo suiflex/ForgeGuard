@@ -356,12 +356,18 @@ fn execute() -> Result<ExitCode> {
                 if json {
                     println!("{}", serde_json::to_string_pretty(&report)?);
                 } else {
-                    println!(
-                        "ForgeGuard global skills installed under {}",
-                        report.home.display()
+                    render_init_result(
+                        &report.agents,
+                        &report.files_written,
+                        &report.files_skipped,
                     );
-                    render_agent_selection(&report.agents);
-                    render_file_changes(&report.files_written, &report.files_skipped);
+                    println!(
+                        "{}",
+                        theme::point(
+                            &format!("global install under {}", report.home.display()),
+                            theme::ACCENT,
+                        )
+                    );
                     if io::stdin().is_terminal() {
                         configure_mode_interactive(&home, true)?;
                     }
@@ -374,13 +380,16 @@ fn execute() -> Result<ExitCode> {
                 if json {
                     println!("{}", serde_json::to_string_pretty(&report)?);
                 } else {
-                    println!("ForgeGuard initialized at {}", root.display());
-                    render_agent_selection(&report.agents);
-                    render_file_changes(&report.files_written, &report.files_skipped);
+                    render_init_result(
+                        &report.agents,
+                        &report.files_written,
+                        &report.files_skipped,
+                    );
+                    let mut done = format!("initialized at {}", root.display());
                     if add_gitignore {
-                        println!("  ignored .forgeguard/ in .gitignore");
+                        done.push_str("; ignored .forgeguard/ in .gitignore");
                     }
-                    println!();
+                    println!("{}\n", theme::point(&done, theme::ACCENT));
                     print!("{}", render_detection(&report.detection));
                     if io::stdin().is_terminal() {
                         configure_mode_interactive(&root, false)?;
@@ -952,14 +961,31 @@ const AGENT_MENU: &[(&str, AgentTarget)] = &[
     ("roo", AgentTarget::Roo),
 ];
 
+/// What each menu entry actually writes, so the picker states the cost of a row
+/// instead of making the reader guess from a bare name.
+const AGENT_SUMMARY: &[(&str, &str)] = &[
+    ("codex", "AGENTS.md, shared skill, Stop hook"),
+    ("claude", "CLAUDE.md, own skill, Stop hook"),
+    ("cursor", ".cursor/rules, shared skill, stop hook"),
+    ("opencode", "AGENTS.md, shared skill"),
+    ("antigravity", ".agents/rules, shared skill, Stop hook"),
+    ("windsurf", "AGENTS.md only"),
+    ("copilot", "AGENTS.md only"),
+    ("cline", "AGENTS.md only"),
+    ("roo", "AGENTS.md only"),
+];
+
 const SCOPE_PROJECT: &str = "This repository";
 const SCOPE_GLOBAL: &str = "Global (user directory)";
 
 fn run_init_wizard(root: &Path) -> Result<(bool, Vec<AgentTarget>, bool)> {
+    println!("{}\n", theme::banner());
+
     let scope = inquire::Select::new(
         "Where do you want to install?",
         vec![SCOPE_PROJECT, SCOPE_GLOBAL],
     )
+    .with_render_config(theme::render_config())
     .prompt()
     .context("init wizard cancelled")?;
     let use_global = scope == SCOPE_GLOBAL;
@@ -969,7 +995,27 @@ fn run_init_wizard(root: &Path) -> Result<(bool, Vec<AgentTarget>, bool)> {
     } else {
         root.to_path_buf()
     };
-    let agents = prompt_for_agents(&detect_root, use_global)?;
+
+    let detected = detect_installed_agents(&detect_root, use_global);
+    let found = agent_names(&detected);
+    println!(
+        "\n{}\n",
+        theme::step(
+            "init — detected",
+            &[if found.is_empty() {
+                "no agent configuration found; nothing is pre-selected".to_owned()
+            } else {
+                format!("{} — pre-selected below", found.join(", "))
+            }],
+            if found.is_empty() {
+                theme::AMBER
+            } else {
+                theme::ACCENT
+            },
+        )
+    );
+
+    let agents = prompt_for_agents(&detected)?;
 
     // The gitignore entry only makes sense for a project checkout.
     let add_gitignore = if use_global {
@@ -977,10 +1023,12 @@ fn run_init_wizard(root: &Path) -> Result<(bool, Vec<AgentTarget>, bool)> {
     } else {
         inquire::Confirm::new("Add .forgeguard/ to .gitignore?")
             .with_default(true)
+            .with_render_config(theme::render_config())
             .prompt()
             .context("init wizard cancelled")?
     };
 
+    println!();
     Ok((use_global, agents, add_gitignore))
 }
 
@@ -988,9 +1036,8 @@ fn run_init_wizard(root: &Path) -> Result<(bool, Vec<AgentTarget>, bool)> {
 /// `detect_root` pre-checked. An empty pick used to mean "install everything",
 /// which turned a stray Enter into every integration written at once; it now
 /// re-asks and then cancels, because writing nothing is always recoverable.
-fn prompt_for_agents(detect_root: &Path, global: bool) -> Result<Vec<AgentTarget>> {
-    let names: Vec<&str> = AGENT_MENU.iter().map(|(name, _)| *name).collect();
-    let detected = detect_installed_agents(detect_root, global);
+fn prompt_for_agents(detected: &[AgentTarget]) -> Result<Vec<AgentTarget>> {
+    let rows = agent_menu_rows();
     let defaults: Vec<usize> = AGENT_MENU
         .iter()
         .enumerate()
@@ -998,10 +1045,22 @@ fn prompt_for_agents(detect_root: &Path, global: bool) -> Result<Vec<AgentTarget
         .map(|(index, _)| index)
         .collect();
 
-    let help = "↑↓ move, space toggle, → all, ← none, enter confirm";
+    let help = "↑↓ move · space toggle · → all · ← none · enter confirm";
     for attempt in 0..2 {
-        let picked = inquire::MultiSelect::new("Which agents?", names.clone())
+        // Each row carries its summary, which makes a useful menu but a wrapped
+        // mess once echoed back as the answer. Echo the names alone.
+        let formatter = &|picked: &[inquire::list_option::ListOption<&String>]| -> String {
+            picked
+                .iter()
+                .map(|option| option.value.split_whitespace().next().unwrap_or_default())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let picked = inquire::MultiSelect::new("Which agents?", rows.clone())
             .with_default(&defaults)
+            .with_page_size(AGENT_MENU.len())
+            .with_formatter(formatter)
+            .with_render_config(theme::render_config())
             .with_help_message(if attempt == 0 {
                 help
             } else {
@@ -1009,12 +1068,44 @@ fn prompt_for_agents(detect_root: &Path, global: bool) -> Result<Vec<AgentTarget
             })
             .prompt()
             .context("init wizard cancelled")?;
-        let agents = agents_from_names(&picked);
+        let agents = agents_from_rows(&picked);
         if !agents.is_empty() {
             return Ok(agents);
         }
+        println!("{}", theme::point("nothing selected", theme::AMBER));
     }
     bail!("no agent selected; nothing was installed")
+}
+
+/// Menu rows pair the target name with what selecting it writes, padded so the
+/// summaries line up into a readable column.
+fn agent_menu_rows() -> Vec<String> {
+    let width = AGENT_MENU
+        .iter()
+        .map(|(name, _)| name.len())
+        .max()
+        .unwrap_or(0);
+    AGENT_MENU
+        .iter()
+        .map(|(name, _)| {
+            let summary = AGENT_SUMMARY
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, summary)| *summary)
+                .unwrap_or_default();
+            format!("{name:<width$}  {summary}")
+        })
+        .collect()
+}
+
+/// Recover the targets behind the rows the user checked, in menu order. Rows are
+/// generated from `AGENT_MENU`, so matching on the name prefix is exact.
+fn agents_from_rows(rows: &[String]) -> Vec<AgentTarget> {
+    let names: Vec<&str> = rows
+        .iter()
+        .map(|row| row.split_whitespace().next().unwrap_or_default())
+        .collect();
+    agents_from_names(&names)
 }
 
 /// Map the agent names the user checked onto concrete targets, in menu order.
@@ -1055,35 +1146,207 @@ fn no_agent_detected(json: bool) -> Result<ExitCode> {
         );
     } else {
         eprintln!(
-            "no agent configuration detected; nothing was installed.\n\
-             Re-run with an explicit selection, for example:\n  \
-             forgeguard init --agent claude\n  \
-             forgeguard init --agent claude,codex\n\
-             Available: {}",
-            choices.join(", ")
+            "{}",
+            theme::panel(
+                &[
+                    "forgeguard init --agent claude".to_owned(),
+                    "forgeguard init --agent claude,codex".to_owned(),
+                    String::new(),
+                    format!("available: {}", choices.join(", ")),
+                ],
+                "pick an agent",
+                theme::VIOLET,
+            )
+        );
+        eprintln!(
+            "{}",
+            theme::point(
+                "no agent configuration detected; nothing was installed",
+                theme::AMBER,
+            )
         );
     }
     Ok(ExitCode::from(EXIT_NEEDS_AGENT_SELECTION))
 }
 
-fn render_agent_selection(agents: &[AgentTarget]) {
-    let names: Vec<&str> = AGENT_MENU
-        .iter()
-        .filter(|(_, target)| agents.contains(target))
-        .map(|(name, _)| *name)
-        .collect();
-    if !names.is_empty() {
-        println!("  agents: {}", names.join(", "));
+/// Terminal branding: ANSI colors, banner, and bordered panels.
+///
+/// Stdlib only — no `owo-colors`, no `console`. Colors are 256-color
+/// approximations of the shared palette so ForgeGuard, websift, and suitest read
+/// as one product, and everything collapses to plain text when stdout is not a
+/// terminal or `NO_COLOR` is set.
+mod theme {
+    use std::io::IsTerminal;
+
+    use inquire::ui::{Attributes, Color, RenderConfig, StyleSheet, Styled};
+
+    pub(super) const ACCENT: &str = "\x1b[38;5;114m"; // #4ade80
+    pub(super) const AMBER: &str = "\x1b[38;5;221m"; // #fbbf24
+    pub(super) const VIOLET: &str = "\x1b[38;5;146m"; // #a78bfa
+    const BOLD_FG: &str = "\x1b[1;38;5;255m"; // #fafafa
+    const RESET: &str = "\x1b[0m";
+
+    fn enabled() -> bool {
+        std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
+    }
+
+    fn paint(color: &str, text: &str) -> String {
+        if enabled() {
+            format!("{color}{text}{RESET}")
+        } else {
+            text.to_owned()
+        }
+    }
+
+    /// Boxed wordmark. The icon is an outlined mini-box holding an anvil mark —
+    /// ForgeGuard forges the guardrails an agent works inside. Box-drawing
+    /// characters, not filled blocks, which render as a blob at small sizes.
+    pub(super) fn banner() -> String {
+        let rows = ["┌───┐", "│ ⌂ │  F O R G E G U A R D", "└───┘"];
+        let width = rows
+            .iter()
+            .map(|row| row.chars().count())
+            .max()
+            .unwrap_or(0)
+            + 4;
+        let mut out = vec![format!("┌{}┐", "─".repeat(width))];
+        for row in rows {
+            let pad = width - 4 - row.chars().count();
+            out.push(format!("│  {row}{}  │", " ".repeat(pad)));
+        }
+        out.push(format!("└{}┘", "─".repeat(width)));
+        paint(ACCENT, &out.join("\n"))
+    }
+
+    /// A row that sits on the connector column, marker at column zero.
+    pub(super) fn point(text: &str, color: &str) -> String {
+        paint(color, &format!("◇ {text}"))
+    }
+
+    /// One step of the flow: a labeled rule, then body lines under a shared gutter.
+    pub(super) fn step(label: &str, lines: &[String], color: &str) -> String {
+        let rule = "─".repeat(30usize.saturating_sub(label.len()).max(3));
+        let mut out = vec![point(&format!("{label} {rule}"), color), gutter("", color)];
+        for line in lines {
+            out.push(gutter(&paint(BOLD_FG, line), color));
+        }
+        out.push(gutter("", color));
+        out.join("\n")
+    }
+
+    fn gutter(text: &str, color: &str) -> String {
+        let bar = paint(color, "│");
+        if text.is_empty() {
+            bar
+        } else {
+            format!("{bar} {text}")
+        }
+    }
+
+    /// Bordered panel around a block of lines.
+    pub(super) fn panel(lines: &[String], title: &str, color: &str) -> String {
+        let width = lines
+            .iter()
+            .map(|line| line.chars().count())
+            .chain(std::iter::once(title.chars().count()))
+            .max()
+            .unwrap_or(0)
+            .max(20);
+        let mut out = vec![paint(
+            color,
+            &format!(
+                "┌─ {title} {}┐",
+                "─".repeat((width + 2).saturating_sub(title.chars().count() + 3))
+            ),
+        )];
+        for line in lines {
+            let pad = " ".repeat(width - line.chars().count());
+            out.push(format!(
+                "{} {}{pad} {}",
+                paint(color, "│"),
+                paint(BOLD_FG, line),
+                paint(color, "│")
+            ));
+        }
+        out.push(paint(color, &format!("└{}┘", "─".repeat(width + 2))));
+        out.join("\n")
+    }
+
+    /// Bind the prompt widgets to the same accent the rest of the flow uses.
+    pub(super) fn render_config() -> RenderConfig<'static> {
+        if !enabled() {
+            return RenderConfig::empty();
+        }
+        let accent = Color::LightGreen;
+        RenderConfig::default()
+            .with_prompt_prefix(Styled::new("◇").with_fg(accent))
+            .with_answered_prompt_prefix(Styled::new("◇").with_fg(accent))
+            .with_highlighted_option_prefix(Styled::new("›").with_fg(accent))
+            .with_selected_checkbox(Styled::new("◼").with_fg(accent))
+            .with_unselected_checkbox(Styled::new("◻").with_fg(Color::DarkGrey))
+            .with_answer(StyleSheet::new().with_fg(accent))
+            .with_help_message(StyleSheet::new().with_fg(Color::DarkGrey))
+            .with_option(StyleSheet::empty())
+            .with_selected_option(Some(
+                StyleSheet::new()
+                    .with_fg(accent)
+                    .with_attr(Attributes::BOLD),
+            ))
     }
 }
 
-fn render_file_changes(written: &[String], skipped: &[String]) {
-    for path in written {
-        println!("  created {path}");
+fn agent_names(agents: &[AgentTarget]) -> Vec<&'static str> {
+    AGENT_MENU
+        .iter()
+        .filter(|(_, target)| agents.contains(target))
+        .map(|(name, _)| *name)
+        .collect()
+}
+
+/// Collapse a write list into one line per top-level directory. A single-agent
+/// install touches sixteen paths, and printing each one buries the two facts that
+/// matter: which agent, and which trees changed.
+fn summarize_paths(paths: &[String]) -> Vec<String> {
+    let mut groups: Vec<(String, usize)> = Vec::new();
+    for path in paths {
+        let key = match path.split_once('/') {
+            Some((directory, _)) => format!("{directory}/"),
+            None => path.clone(),
+        };
+        // A map would cost the insertion order the rendered output depends on.
+        // forgeguard: allow FG-ALG-002 -- groups are top-level directories, of which ForgeGuard writes at most six
+        match groups.iter_mut().find(|(name, _)| *name == key) {
+            Some((_, count)) => *count += 1,
+            None => groups.push((key, 1)),
+        }
     }
-    for path in skipped {
-        println!("  skipped {path} (already exists)");
+    groups
+        .into_iter()
+        .map(|(name, count)| {
+            if count > 1 {
+                format!("{name} ({count} files)")
+            } else {
+                name
+            }
+        })
+        .collect()
+}
+
+fn render_init_result(agents: &[AgentTarget], written: &[String], skipped: &[String]) {
+    let mut body = vec![format!("agents   {}", agent_names(agents).join(", "))];
+    for (index, line) in summarize_paths(written).into_iter().enumerate() {
+        body.push(format!(
+            "{:<8} {line}",
+            if index == 0 { "wrote" } else { "" }
+        ));
     }
+    for (index, line) in summarize_paths(skipped).into_iter().enumerate() {
+        body.push(format!(
+            "{:<8} {line}",
+            if index == 0 { "kept" } else { "" }
+        ));
+    }
+    println!("{}", theme::panel(&body, "installed", theme::ACCENT));
 }
 
 #[cfg(test)]
@@ -1091,7 +1354,8 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        agents_from_names, AgentTarget, BaselineCommands, Cli, Commands, ConfigCommands, OutputArg,
+        agent_menu_rows, agents_from_names, agents_from_rows, summarize_paths, AgentTarget,
+        BaselineCommands, Cli, Commands, ConfigCommands, OutputArg,
     };
 
     #[test]
@@ -1105,6 +1369,46 @@ mod tests {
     #[test]
     fn empty_pick_installs_nothing() {
         assert!(agents_from_names(&[]).is_empty());
+    }
+
+    #[test]
+    fn menu_rows_pair_each_agent_with_what_it_writes() {
+        let rows = agent_menu_rows();
+
+        assert!(rows[1].starts_with("claude "));
+        assert!(rows[1].ends_with("CLAUDE.md, own skill, Stop hook"));
+        assert!(rows.iter().all(|row| row.contains("  ")));
+    }
+
+    #[test]
+    fn menu_rows_round_trip_back_to_targets() {
+        let rows = agent_menu_rows();
+        let picked = vec![rows[1].clone(), rows[6].clone()];
+
+        assert_eq!(
+            agents_from_rows(&picked),
+            vec![AgentTarget::Claude, AgentTarget::Copilot]
+        );
+    }
+
+    #[test]
+    fn writes_collapse_to_one_line_per_directory() {
+        let written = vec![
+            ".forgeguard/config.toml".to_owned(),
+            ".forgeguard/.gitignore".to_owned(),
+            "CLAUDE.md".to_owned(),
+            ".claude/settings.json".to_owned(),
+            ".claude/skills/forgeguard-engineering/SKILL.md".to_owned(),
+        ];
+
+        assert_eq!(
+            summarize_paths(&written),
+            vec![
+                ".forgeguard/ (2 files)".to_owned(),
+                "CLAUDE.md".to_owned(),
+                ".claude/ (2 files)".to_owned(),
+            ]
+        );
     }
 
     #[test]

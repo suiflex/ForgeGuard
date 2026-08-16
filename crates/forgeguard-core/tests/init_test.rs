@@ -199,9 +199,12 @@ fn installs_global_skills_without_project_configuration() {
     assert!(directory.path().join(".gemini/GEMINI.md").exists());
     assert!(directory
         .path()
-        .join(".gemini/config/skills/forgeguard-engineering/SKILL.md")
+        .join(".gemini/antigravity-cli/skills/forgeguard-engineering/SKILL.md")
         .exists());
-    assert!(directory.path().join(".gemini/config/hooks.json").exists());
+    // `.gemini/config` is documented only for `mcp_config.json`, and Antigravity
+    // publishes no user-level hook file, so a global install writes neither.
+    assert!(!directory.path().join(".gemini/config").exists());
+    assert!(!directory.path().join(".gemini/hooks.json").exists());
     assert!(!directory.path().join(".forgeguard/config.toml").exists());
     assert!(!report.files_written.is_empty());
 }

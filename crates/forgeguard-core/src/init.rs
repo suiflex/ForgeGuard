@@ -13,13 +13,18 @@ const AGENTS_TEMPLATE: &str = include_str!("../assets/templates/AGENTS.md");
 const CLAUDE_TEMPLATE: &str = include_str!("../assets/templates/CLAUDE.md");
 const CURSOR_TEMPLATE: &str = include_str!("../assets/templates/CURSOR.md");
 const FORGEGUARD_GITIGNORE: &str = "cache/\nreports/\n";
-const AGENT_HOOK_FILES: [&str; 5] = [
+const AGENT_HOOK_FILES: [&str; 4] = [
     ".claude/settings.json",
     ".codex/hooks.json",
     ".cursor/hooks.json",
     ".agents/hooks.json",
-    ".gemini/config/hooks.json",
 ];
+/// Antigravity CLI moved global skills out of `.gemini/skills`; `.gemini/config`
+/// is documented only for `mcp_config.json`, never for skills or hooks.
+const GLOBAL_ANTIGRAVITY_SKILL_DIRECTORY: &str =
+    ".gemini/antigravity-cli/skills/forgeguard-engineering";
+const OBSOLETE_GLOBAL_ANTIGRAVITY_SKILL_DIRECTORY: &str =
+    ".gemini/config/skills/forgeguard-engineering";
 const DEFAULT_STOP_HOOK_TIMEOUT_SECONDS: u64 = 600;
 const MAX_STOP_HOOK_TIMEOUT_SECONDS: u64 = 3_600;
 /// Scan and report time on top of the configured command budget.
@@ -528,20 +533,29 @@ fn install_antigravity(
     written: &mut Vec<String>,
     skipped: &mut Vec<String>,
 ) -> Result<()> {
-    let (policy_path, skill_directory, hook_path) = match scope {
+    let (policy_path, skill_directory) = match scope {
         InstallScope::Project => (
             root.join(".agents/rules/forgeguard.md"),
             ".agents/skills/forgeguard-engineering",
-            root.join(".agents/hooks.json"),
         ),
         InstallScope::Global => (
             root.join(".gemini/GEMINI.md"),
-            ".gemini/config/skills/forgeguard-engineering",
-            root.join(".gemini/config/hooks.json"),
+            GLOBAL_ANTIGRAVITY_SKILL_DIRECTORY,
         ),
     };
+    if force {
+        remove_directory(root, OBSOLETE_GLOBAL_ANTIGRAVITY_SKILL_DIRECTORY)?;
+    }
     write_file(root, &policy_path, AGENTS_TEMPLATE, force, written, skipped)?;
     install_skill(root, skill_directory, force, written, skipped)?;
+
+    // Only the workspace agent has a documented local hook file. Antigravity
+    // publishes no user-level hook path, so a global install stops at rules and
+    // skills rather than writing a file no product reads.
+    let InstallScope::Project = scope else {
+        return Ok(());
+    };
+    let hook_path = root.join(".agents/hooks.json");
     install_antigravity_simple_hook(
         root,
         &hook_path,
@@ -910,6 +924,20 @@ fn remove_legacy_skills(root: &Path, directory: &str, include_engineering: bool)
         }
     }
     Ok(())
+}
+
+/// Drop a directory ForgeGuard used to install into. A symlink is unlinked rather
+/// than followed, so a user who points the path elsewhere does not lose that tree.
+fn remove_directory(root: &Path, relative: &str) -> Result<()> {
+    let path = root.join(relative);
+    let Ok(metadata) = fs::symlink_metadata(&path) else {
+        return Ok(());
+    };
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        fs::remove_dir_all(&path).with_context(|| format!("failed to remove {}", path.display()))
+    } else {
+        fs::remove_file(&path).with_context(|| format!("failed to remove {}", path.display()))
+    }
 }
 
 fn write_file(

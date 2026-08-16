@@ -363,6 +363,11 @@ with that one file and writes nothing under `.windsurf/`, `.github/`, `.clinerul
 `.roo/`. None of them exposes a hook API ForgeGuard can drive, and none has a documented
 skill directory, so they receive the policy but not the engineering skill.
 
+User-level rules are not shared the same way, so `--global` follows each agent's own
+documented path instead: Cline reads `~/.agents/AGENTS.md`, Windsurf/Devin reads
+`~/.codeium/windsurf/memories/global_rules.md`, and Roo reads `~/.roo/rules/`. Copilot
+instructions are repository-scoped, so a global install writes nothing for it.
+
 [OpenCode officially discovers](https://opencode.ai/docs/skills) both `AGENTS.md` and `.agents/skills`. Its current plugin lifecycle exposes `session.idle` only after the agent loop stops, so ForgeGuard does not claim a reliable blocking `Stop` hook there. The compact policy requires `forgeguard gate --changed --output compact` before completion. [Antigravity provides a native blocking `Stop` protocol](https://antigravity.google/docs/hooks), so failures automatically return the agent to its execution loop.
 
 Other agents receive the universal CLI gate immediately. Agents that understand the emerging `AGENTS.md` and Agent Skills conventions also receive ForgeGuard guidance without a dedicated adapter.

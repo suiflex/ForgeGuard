@@ -201,9 +201,10 @@ const PROJECT_AGENT_MARKERS: &[(AgentTarget, &[&str])] = &[
     (AgentTarget::Roo, &[".roo", ".roorules"]),
 ];
 
-/// Home-directory equivalents of `PROJECT_AGENT_MARKERS`. Cline and Copilot have
-/// no documented user-level rules directory, so they are absent here rather than
-/// guessed at.
+/// Home-directory equivalents of `PROJECT_AGENT_MARKERS`. Copilot is absent
+/// because its instructions are repository-scoped, and Cline because the
+/// `~/.agents` directory it reads is also created by a global Codex or Cursor
+/// install, which would make it detect itself on the next run.
 const GLOBAL_AGENT_MARKERS: &[(AgentTarget, &[&str])] = &[
     (AgentTarget::Codex, &[".codex"]),
     (AgentTarget::Claude, &[".claude"]),
@@ -316,7 +317,7 @@ fn install_agents(
             AgentTarget::Windsurf
             | AgentTarget::Copilot
             | AgentTarget::Cline
-            | AgentTarget::Roo => install_agents_md(root, scope, force, written, skipped)?,
+            | AgentTarget::Roo => install_agents_md(root, target, scope, force, written, skipped)?,
             AgentTarget::All => unreachable!("all is expanded before installation"),
         }
     }
@@ -657,23 +658,54 @@ fn install_antigravity(
     )
 }
 
-/// Windsurf, Copilot, Cline, and Roo all read `AGENTS.md` natively and expose no
-/// hook API ForgeGuard can drive, so supporting them costs one shared policy file
-/// and nothing else. They do not receive the engineering skill: none of them has a
-/// documented skill directory, and writing four near-duplicate rules files is the
-/// clutter this selection work exists to remove.
+/// Windsurf, Copilot, Cline, and Roo all read a workspace `AGENTS.md` natively and
+/// expose no hook API ForgeGuard can drive, so supporting a project costs one
+/// shared policy file and nothing else. They do not receive the engineering skill:
+/// none of them has a documented skill directory, and writing four near-duplicate
+/// rules files is the clutter this selection work exists to remove.
+///
+/// User-level rules are not shared the same way, so a global install follows each
+/// agent's own documented path — or writes nothing when the agent documents none,
+/// rather than leaving a file no product reads.
 fn install_agents_md(
     root: &Path,
+    target: AgentTarget,
     scope: InstallScope,
     force: bool,
     written: &mut Vec<String>,
     skipped: &mut Vec<String>,
 ) -> Result<()> {
-    let policy_path = match scope {
-        InstallScope::Project => root.join("AGENTS.md"),
-        InstallScope::Global => root.join(".agents/AGENTS.md"),
+    let relative = match scope {
+        InstallScope::Project => "AGENTS.md",
+        InstallScope::Global => match global_policy_path(target) {
+            Some(path) => path,
+            None => return Ok(()),
+        },
     };
-    write_file(root, &policy_path, AGENTS_TEMPLATE, force, written, skipped)
+    write_file(
+        root,
+        &root.join(relative),
+        AGENTS_TEMPLATE,
+        force,
+        written,
+        skipped,
+    )
+}
+
+/// Where each `AGENTS.md`-only agent reads user-level rules from. `None` means the
+/// agent documents no user-level location, so a global install writes nothing for
+/// it rather than guessing.
+fn global_policy_path(target: AgentTarget) -> Option<&'static str> {
+    match target {
+        // Cline lists `~/.agents/AGENTS.md` among its rule sources.
+        AgentTarget::Cline => Some(".agents/AGENTS.md"),
+        // Windsurf/Devin reads AGENTS.md per workspace; globally it reads one file.
+        AgentTarget::Windsurf => Some(".codeium/windsurf/memories/global_rules.md"),
+        // Roo reads every file in its global rules directory.
+        AgentTarget::Roo => Some(".roo/rules/forgeguard.md"),
+        // Copilot instructions are repository-scoped only.
+        _ => None,
+    }
 }
 
 fn install_skill(

@@ -663,3 +663,33 @@ fn detection_is_stable_across_repeated_initialization() {
     assert!(directory.path().join(".agents/skills").exists());
     assert_eq!(detect_installed_agents(directory.path(), false), first);
 }
+
+#[test]
+fn global_agents_md_targets_follow_each_documented_user_path() {
+    let directory = tempdir().expect("temp directory");
+
+    forgeguard_core::initialize_global(
+        directory.path(),
+        &InitOptions {
+            force: false,
+            agents: vec![
+                AgentTarget::Windsurf,
+                AgentTarget::Copilot,
+                AgentTarget::Cline,
+                AgentTarget::Roo,
+            ],
+        },
+    )
+    .expect("install global AGENTS.md-only targets");
+
+    // Each agent reads user-level rules from its own place; a shared
+    // `~/.agents/AGENTS.md` would be read by Cline alone.
+    assert!(directory.path().join(".agents/AGENTS.md").is_file());
+    assert!(directory
+        .path()
+        .join(".codeium/windsurf/memories/global_rules.md")
+        .is_file());
+    assert!(directory.path().join(".roo/rules/forgeguard.md").is_file());
+    // Copilot documents no user-level location, so nothing is written for it.
+    assert!(!directory.path().join(".github").exists());
+}

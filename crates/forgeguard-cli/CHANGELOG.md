@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.12.0](https://github.com/suiflex/ForgeGuard/compare/v0.11.2...v0.12.0) (2026-08-17)
+
+
+### Features
+
+* **cli:** brand init with the shared terminal theme ([cfdf76f](https://github.com/suiflex/ForgeGuard/commit/cfdf76f000519142368e84da9f652fb47344ad58))
+* **cli:** install init only for the agents a directory uses ([081ee20](https://github.com/suiflex/ForgeGuard/commit/081ee204451be8cdf789eb43d1b80d788074859a))
+* **init:** install only for detected agents, ask before overwriting ([2c7f00d](https://github.com/suiflex/ForgeGuard/commit/2c7f00d1dfaf0a2ca1e8cb6665f6b476b4fad674))
+* **init:** offer to refresh drifted files instead of deciding for you ([cf4ebb2](https://github.com/suiflex/ForgeGuard/commit/cf4ebb2e8d306c87478b0842186ccc78356d19a4))
+
+
+### Bug Fixes
+
+* **cli:** draw the real ForgeGuard mark in the banner ([a2a304e](https://github.com/suiflex/ForgeGuard/commit/a2a304e4a347481894ce4ebe133d4f82b2a3b713))
+
 ## [0.11.2](https://github.com/suiflex/ForgeGuard/compare/v0.11.1...v0.11.2) (2026-08-13)
 
 

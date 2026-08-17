@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/suiflex/ForgeGuard/compare/v0.12.0...v0.13.0) (2026-08-17)
+
+
+### Features
+
+* **cli:** report policy files left as-is ([672bc4b](https://github.com/suiflex/ForgeGuard/commit/672bc4ba2bb934f3da6a8234caace6c8fad8cfc0))
+
 ## [0.12.0](https://github.com/suiflex/ForgeGuard/compare/v0.11.2...v0.12.0) (2026-08-17)
 
 

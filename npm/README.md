@@ -28,7 +28,7 @@ Initialize ForgeGuard in a repository:
 
 ```bash
 cd your-project
-forgeguard init --agent all
+forgeguard init
 forgeguard doctor
 ```
 

@@ -28,7 +28,8 @@ pub use hook::{
     GoalContract, HookAgent, HookDecision, TaskState, TaskStatus, TaskTodo,
 };
 pub use init::{
-    initialize_global, initialize_project, AgentTarget, GlobalInitReport, InitOptions, InitReport,
+    detect_installed_agents, initialize_global, initialize_project, AgentTarget, GlobalInitReport,
+    InitOptions, InitReport,
 };
 pub use model::{CheckResult, EvidenceConfidence, Finding, GateReport, GateStatus, Severity};
 pub use rules::{LanguageCapability, RuleMetadata, LANGUAGE_CAPABILITIES, RULES};

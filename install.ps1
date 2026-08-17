@@ -60,7 +60,7 @@ try {
     Write-Host ""
     Write-Host "ForgeGuard installed: $BinaryPath"
     Write-Host "Restart terminal, then run inside a repository:"
-    Write-Host "  forgeguard init --agent all"
+    Write-Host "  forgeguard init"
 }
 finally {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $TemporaryDirectory

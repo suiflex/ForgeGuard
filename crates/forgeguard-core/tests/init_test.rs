@@ -1,6 +1,8 @@
 use std::fs;
 
-use forgeguard_core::{initialize_project, AgentTarget, ForgeGuardConfig, InitOptions};
+use forgeguard_core::{
+    detect_installed_agents, initialize_project, AgentTarget, ForgeGuardConfig, InitOptions,
+};
 use tempfile::tempdir;
 
 #[test]
@@ -16,6 +18,7 @@ fn installs_configuration_for_all_supported_agents() {
         directory.path(),
         &InitOptions {
             force: false,
+            refresh: false,
             agents: vec![AgentTarget::All],
         },
     )
@@ -128,6 +131,7 @@ fn project_init_appends_installed_agent_directories_to_existing_gitignore() {
     fs::write(directory.path().join(".gitignore"), "target/\n/.codex/\n").expect("write gitignore");
     let options = InitOptions {
         force: false,
+        refresh: false,
         agents: vec![AgentTarget::All],
     };
 
@@ -150,6 +154,7 @@ fn project_init_ignores_only_directories_for_selected_agents() {
         directory.path(),
         &InitOptions {
             force: false,
+            refresh: false,
             agents: vec![AgentTarget::Claude],
         },
     )
@@ -169,6 +174,7 @@ fn installs_global_skills_without_project_configuration() {
         directory.path(),
         &InitOptions {
             force: false,
+            refresh: false,
             agents: vec![AgentTarget::All],
         },
     )
@@ -199,9 +205,12 @@ fn installs_global_skills_without_project_configuration() {
     assert!(directory.path().join(".gemini/GEMINI.md").exists());
     assert!(directory
         .path()
-        .join(".gemini/config/skills/forgeguard-engineering/SKILL.md")
+        .join(".gemini/antigravity-cli/skills/forgeguard-engineering/SKILL.md")
         .exists());
-    assert!(directory.path().join(".gemini/config/hooks.json").exists());
+    // `.gemini/config` is documented only for `mcp_config.json`, and Antigravity
+    // publishes no user-level hook file, so a global install writes neither.
+    assert!(!directory.path().join(".gemini/config").exists());
+    assert!(!directory.path().join(".gemini/hooks.json").exists());
     assert!(!directory.path().join(".forgeguard/config.toml").exists());
     assert!(!report.files_written.is_empty());
 }
@@ -219,6 +228,7 @@ fn stop_hook_timeout_covers_the_configured_command_budget() {
         directory.path(),
         &InitOptions {
             force: false,
+            refresh: false,
             agents: vec![AgentTarget::Claude],
         },
     )
@@ -269,6 +279,7 @@ fn reinitialization_repairs_a_stop_hook_timeout_below_the_command_budget() {
         directory.path(),
         &InitOptions {
             force: false,
+            refresh: false,
             agents: vec![AgentTarget::Claude],
         },
     )
@@ -311,6 +322,7 @@ fn hook_install_preserves_existing_settings_and_is_idempotent() {
 
     let options = InitOptions {
         force: false,
+        refresh: false,
         agents: vec![AgentTarget::Claude],
     };
     initialize_project(directory.path(), &options).expect("first initialization");
@@ -366,6 +378,7 @@ fn force_removes_only_legacy_forgeguard_skills() {
         directory.path(),
         &InitOptions {
             force: true,
+            refresh: false,
             agents: vec![AgentTarget::Codex],
         },
     )
@@ -393,6 +406,7 @@ fn force_removes_obsolete_skill_reference() {
         directory.path(),
         &InitOptions {
             force: true,
+            refresh: false,
             agents: vec![AgentTarget::Codex],
         },
     )
@@ -415,6 +429,7 @@ fn non_force_preserves_obsolete_skill_reference() {
         directory.path(),
         &InitOptions {
             force: false,
+            refresh: false,
             agents: vec![AgentTarget::Codex],
         },
     )
@@ -432,6 +447,7 @@ fn existing_policy_is_preserved_without_force() {
         directory.path(),
         &InitOptions {
             force: false,
+            refresh: false,
             agents: vec![AgentTarget::Codex],
         },
     )
@@ -451,6 +467,7 @@ fn opencode_target_uses_shared_standards_without_unrelated_hooks() {
         directory.path(),
         &InitOptions {
             force: false,
+            refresh: false,
             agents: vec![AgentTarget::OpenCode],
         },
     )
@@ -484,6 +501,7 @@ fn antigravity_hook_merge_is_idempotent() {
     .expect("write hooks");
     let options = InitOptions {
         force: false,
+        refresh: false,
         agents: vec![AgentTarget::Antigravity],
     };
 
@@ -533,6 +551,7 @@ fn force_unlinks_legacy_symlink_without_removing_target() {
         directory.path(),
         &InitOptions {
             force: true,
+            refresh: false,
             agents: vec![AgentTarget::Codex],
         },
     )
@@ -540,4 +559,317 @@ fn force_unlinks_legacy_symlink_without_removing_target() {
 
     assert!(!legacy.exists());
     assert!(target.join("keep.txt").exists());
+}
+
+#[test]
+fn detects_only_agents_with_configuration_present() {
+    let directory = tempdir().expect("temp directory");
+
+    assert!(detect_installed_agents(directory.path(), false).is_empty());
+
+    fs::create_dir_all(directory.path().join(".claude")).expect("create .claude");
+    fs::create_dir_all(directory.path().join(".roo/rules")).expect("create .roo/rules");
+    fs::create_dir_all(directory.path().join(".github")).expect("create .github");
+    fs::write(
+        directory.path().join(".github/copilot-instructions.md"),
+        "# rules\n",
+    )
+    .expect("write copilot instructions");
+
+    let detected = detect_installed_agents(directory.path(), false);
+
+    assert_eq!(
+        detected,
+        vec![AgentTarget::Claude, AgentTarget::Copilot, AgentTarget::Roo]
+    );
+}
+
+#[test]
+fn agents_md_only_targets_write_no_extra_directories() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("Cargo.toml"),
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write manifest");
+
+    let report = initialize_project(
+        directory.path(),
+        &InitOptions {
+            force: false,
+            refresh: false,
+            agents: vec![
+                AgentTarget::Windsurf,
+                AgentTarget::Copilot,
+                AgentTarget::Cline,
+                AgentTarget::Roo,
+            ],
+        },
+    )
+    .expect("install AGENTS.md-only targets");
+
+    // One shared policy file plus ForgeGuard's own config, and nothing else:
+    // these four agents read AGENTS.md natively and expose no hook API.
+    assert_eq!(
+        report.files_written,
+        vec![
+            ".forgeguard/config.toml".to_owned(),
+            ".forgeguard/.gitignore".to_owned(),
+            "AGENTS.md".to_owned(),
+        ]
+    );
+    for unexpected in [".windsurf", ".clinerules", ".roo", ".github", ".agents"] {
+        assert!(
+            !directory.path().join(unexpected).exists(),
+            "{unexpected} should not be created"
+        );
+    }
+}
+
+#[test]
+fn force_prunes_the_superseded_global_antigravity_skill_directory() {
+    let directory = tempdir().expect("temp directory");
+    let obsolete = directory
+        .path()
+        .join(".gemini/config/skills/forgeguard-engineering");
+    fs::create_dir_all(&obsolete).expect("seed obsolete skill directory");
+    fs::write(obsolete.join("SKILL.md"), "stale\n").expect("write stale skill");
+
+    forgeguard_core::initialize_global(
+        directory.path(),
+        &InitOptions {
+            force: true,
+            refresh: false,
+            agents: vec![AgentTarget::Antigravity],
+        },
+    )
+    .expect("refresh global antigravity install");
+
+    assert!(!obsolete.exists());
+    assert!(directory
+        .path()
+        .join(".gemini/antigravity-cli/skills/forgeguard-engineering/SKILL.md")
+        .exists());
+}
+
+#[test]
+fn detection_is_stable_across_repeated_initialization() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("Cargo.toml"),
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write manifest");
+    fs::create_dir_all(directory.path().join(".codex")).expect("create .codex");
+
+    let first = detect_installed_agents(directory.path(), false);
+    assert_eq!(first, vec![AgentTarget::Codex]);
+
+    initialize_project(
+        directory.path(),
+        &InitOptions {
+            force: false,
+            refresh: false,
+            agents: first.clone(),
+        },
+    )
+    .expect("install for codex");
+
+    // Codex shares `.agents/skills` with Cursor and OpenCode, so ForgeGuard's own
+    // output must not make the next run believe Antigravity is in use too.
+    assert!(directory.path().join(".agents/skills").exists());
+    assert_eq!(detect_installed_agents(directory.path(), false), first);
+}
+
+#[test]
+fn global_agents_md_targets_follow_each_documented_user_path() {
+    let directory = tempdir().expect("temp directory");
+
+    forgeguard_core::initialize_global(
+        directory.path(),
+        &InitOptions {
+            force: false,
+            refresh: false,
+            agents: vec![
+                AgentTarget::Windsurf,
+                AgentTarget::Copilot,
+                AgentTarget::Cline,
+                AgentTarget::Roo,
+            ],
+        },
+    )
+    .expect("install global AGENTS.md-only targets");
+
+    // Each agent reads user-level rules from its own place; a shared
+    // `~/.agents/AGENTS.md` would be read by Cline alone.
+    assert!(directory.path().join(".agents/AGENTS.md").is_file());
+    assert!(directory
+        .path()
+        .join(".codeium/windsurf/memories/global_rules.md")
+        .is_file());
+    assert!(directory.path().join(".roo/rules/forgeguard.md").is_file());
+    // Copilot documents no user-level location, so nothing is written for it.
+    assert!(!directory.path().join(".github").exists());
+}
+
+/// Seed a project installed for Claude, then drift two ForgeGuard-owned files.
+fn project_with_drift() -> tempfile::TempDir {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("Cargo.toml"),
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write manifest");
+    initialize_project(
+        directory.path(),
+        &InitOptions {
+            force: false,
+            refresh: false,
+            agents: vec![AgentTarget::Claude],
+        },
+    )
+    .expect("install for claude");
+    fs::write(directory.path().join("CLAUDE.md"), "hand written\n").expect("edit policy");
+    fs::write(
+        directory
+            .path()
+            .join(".claude/skills/forgeguard-engineering/SKILL.md"),
+        "from an older release\n",
+    )
+    .expect("age the skill");
+    directory
+}
+
+#[test]
+fn drifted_files_are_reported_and_left_alone() {
+    let directory = project_with_drift();
+
+    let report = initialize_project(
+        directory.path(),
+        &InitOptions {
+            force: false,
+            refresh: false,
+            agents: vec![AgentTarget::Claude],
+        },
+    )
+    .expect("re-run init");
+
+    assert_eq!(
+        report.files_outdated,
+        vec![
+            "CLAUDE.md".to_owned(),
+            ".claude/skills/forgeguard-engineering/SKILL.md".to_owned(),
+        ]
+    );
+    // Reported, never rewritten: replacing a file the user may have edited is
+    // their decision, so a plain init leaves both exactly as they were.
+    assert_eq!(
+        fs::read_to_string(directory.path().join("CLAUDE.md")).expect("read policy"),
+        "hand written\n"
+    );
+    // Files that already match the bundle are not drift.
+    assert!(!report
+        .files_outdated
+        .iter()
+        .any(|path| path.contains("references/")));
+}
+
+#[test]
+fn refresh_replaces_drifted_files_without_touching_configuration() {
+    let directory = project_with_drift();
+    let configuration = directory.path().join(".forgeguard/config.toml");
+    let tuned = fs::read_to_string(&configuration)
+        .expect("read config")
+        .replace("mode = \"default\"", "mode = \"strict\"");
+    fs::write(&configuration, &tuned).expect("tune config");
+
+    let report = initialize_project(
+        directory.path(),
+        &InitOptions {
+            force: false,
+            refresh: true,
+            agents: vec![AgentTarget::Claude],
+        },
+    )
+    .expect("refresh");
+
+    assert!(report.files_outdated.is_empty());
+    assert!(report.files_written.contains(&"CLAUDE.md".to_owned()));
+    assert_ne!(
+        fs::read_to_string(directory.path().join("CLAUDE.md")).expect("read policy"),
+        "hand written\n"
+    );
+    assert_eq!(
+        fs::read_to_string(&configuration).expect("read config"),
+        tuned,
+        "refresh must not regenerate configuration"
+    );
+}
+
+#[test]
+fn force_reinstalls_files_but_keeps_configuration() {
+    let directory = project_with_drift();
+    let configuration = directory.path().join(".forgeguard/config.toml");
+    let tuned = fs::read_to_string(&configuration)
+        .expect("read config")
+        .replace("mode = \"default\"", "mode = \"strict\"");
+    fs::write(&configuration, &tuned).expect("tune config");
+
+    initialize_project(
+        directory.path(),
+        &InitOptions {
+            force: true,
+            refresh: false,
+            agents: vec![AgentTarget::Claude],
+        },
+    )
+    .expect("force reinstall");
+
+    // The operating mode and any tuned command belong to the repository; a
+    // reinstall of the files ForgeGuard ships is no reason to discard them.
+    assert_eq!(
+        fs::read_to_string(&configuration).expect("read config"),
+        tuned
+    );
+    assert_ne!(
+        fs::read_to_string(directory.path().join("CLAUDE.md")).expect("read policy"),
+        "hand written\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_policy_file_is_never_written_through() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("Cargo.toml"),
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write manifest");
+    // Pointing AGENTS.md at CLAUDE.md is a common way to keep one policy file.
+    fs::write(directory.path().join("CLAUDE.md"), "hand written\n").expect("seed policy");
+    std::os::unix::fs::symlink("CLAUDE.md", directory.path().join("AGENTS.md"))
+        .expect("link AGENTS.md at CLAUDE.md");
+
+    initialize_project(
+        directory.path(),
+        &InitOptions {
+            force: true,
+            refresh: false,
+            agents: vec![AgentTarget::Codex],
+        },
+    )
+    .expect("install for codex");
+
+    // Writing the Codex policy through the link would replace the file at the
+    // other end, and the refresh prompt would have named AGENTS.md while
+    // destroying CLAUDE.md.
+    assert_eq!(
+        fs::read_to_string(directory.path().join("CLAUDE.md")).expect("read policy"),
+        "hand written\n"
+    );
+    assert!(fs::symlink_metadata(directory.path().join("AGENTS.md"))
+        .expect("stat link")
+        .file_type()
+        .is_symlink());
 }

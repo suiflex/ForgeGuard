@@ -118,7 +118,7 @@ No edit is required. Set `auto_poke = false` only to opt out, or lower `max_auto
 Upgrade the binary, then refresh bundled policies, skills, and hook entries:
 
 ```bash
-forgeguard init --agent all --force
+forgeguard init --force
 forgeguard doctor
 ```
 

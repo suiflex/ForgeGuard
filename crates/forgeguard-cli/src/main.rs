@@ -376,6 +376,7 @@ fn execute() -> Result<ExitCode> {
                             theme::ACCENT,
                         )
                     );
+                    report_kept(&report.files_kept);
                     if offer_refresh(&report.files_outdated)? {
                         let report = initialize_global(
                             &home,
@@ -412,6 +413,7 @@ fn execute() -> Result<ExitCode> {
                         done.push_str("; ignored .forgeguard/ in .gitignore");
                     }
                     println!("{}\n", theme::point(&done, theme::ACCENT));
+                    report_kept(&report.files_kept);
                     if offer_refresh(&report.files_outdated)? {
                         let report = initialize_project(
                             &root,
@@ -1436,6 +1438,15 @@ fn summarize_paths(paths: &[String]) -> Vec<String> {
 /// so a stray Enter never costs anyone their work.
 ///
 /// Returns whether the caller should reinstall with `refresh` set.
+/// Files ForgeGuard found already written by the user. It never rewrites these,
+/// so the only thing left to do is say so — silence would read as "installed".
+fn report_kept(kept: &[String]) {
+    if kept.is_empty() {
+        return;
+    }
+    println!("{}", theme::panel(kept, "yours — left as-is", theme::AMBER));
+}
+
 fn offer_refresh(outdated: &[String]) -> Result<bool> {
     if outdated.is_empty() {
         return Ok(false);

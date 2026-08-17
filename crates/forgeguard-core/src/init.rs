@@ -152,6 +152,8 @@ struct InstallLog {
     /// version. Replacing a file the user may have edited is their decision, so
     /// these are reported rather than silently rewritten.
     outdated: Vec<String>,
+    /// User-owned files left exactly as they were found.
+    kept: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,6 +165,8 @@ pub struct InitReport {
     pub files_skipped: Vec<String>,
     /// Existing ForgeGuard-owned files that differ from the bundled versions.
     pub files_outdated: Vec<String>,
+    /// Existing user-owned files ForgeGuard refused to rewrite.
+    pub files_kept: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,6 +176,7 @@ pub struct GlobalInitReport {
     pub files_written: Vec<String>,
     pub files_skipped: Vec<String>,
     pub files_outdated: Vec<String>,
+    pub files_kept: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -271,6 +276,7 @@ pub fn initialize_global(home: &Path, options: &InitOptions) -> Result<GlobalIni
         files_written: log.written,
         files_skipped: log.skipped,
         files_outdated: log.outdated,
+        files_kept: log.kept,
     })
 }
 
@@ -312,6 +318,7 @@ pub fn initialize_project(root: &Path, options: &InitOptions) -> Result<InitRepo
         files_written: log.written,
         files_skipped: log.skipped,
         files_outdated: log.outdated,
+        files_kept: log.kept,
     })
 }
 
@@ -1031,6 +1038,27 @@ fn remove_directory(root: &Path, relative: &str) -> Result<()> {
     }
 }
 
+/// Files that carry the user's own instructions alongside ForgeGuard's line.
+/// ForgeGuard seeds them when they are absent and never touches them again:
+/// rewriting one destroys work that was never ours, so no flag reaches them.
+/// Everything else ForgeGuard installs lives under a name or directory of its
+/// own, where the bundled copy is the only copy and refreshing is safe.
+const USER_OWNED_FILES: &[&str] = &[
+    "CLAUDE.md",
+    "AGENTS.md",
+    ".claude/CLAUDE.md",
+    ".codex/AGENTS.md",
+    ".config/opencode/AGENTS.md",
+    ".gemini/GEMINI.md",
+    ".agents/AGENTS.md",
+    ".codeium/windsurf/memories/global_rules.md",
+];
+
+fn is_user_owned(relative: &str) -> bool {
+    let relative = relative.replace('\\', "/");
+    USER_OWNED_FILES.contains(&relative.as_str())
+}
+
 fn write_file(
     root: &Path,
     path: &Path,
@@ -1060,6 +1088,13 @@ fn write_file(
         // knows which. Either way it is reported, not quietly replaced.
         let current = fs::read_to_string(path).unwrap_or_default();
         if current == content {
+            record(&mut log.skipped, relative);
+            return Ok(());
+        }
+        // Checked before `overwrite` so that neither --force nor --refresh can
+        // reach the write below: the user's own file is not ours to replace.
+        if is_user_owned(&relative) {
+            record(&mut log.kept, relative.clone());
             record(&mut log.skipped, relative);
             return Ok(());
         }

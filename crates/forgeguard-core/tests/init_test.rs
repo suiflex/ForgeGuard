@@ -754,13 +754,13 @@ fn drifted_files_are_reported_and_left_alone() {
     )
     .expect("re-run init");
 
+    // CLAUDE.md is the user's file, so it is never a refresh candidate; only
+    // the skill, which ForgeGuard owns outright, can be offered for replacement.
     assert_eq!(
         report.files_outdated,
-        vec![
-            "CLAUDE.md".to_owned(),
-            ".claude/skills/forgeguard-engineering/SKILL.md".to_owned(),
-        ]
+        vec![".claude/skills/forgeguard-engineering/SKILL.md".to_owned()]
     );
+    assert_eq!(report.files_kept, vec!["CLAUDE.md".to_owned()]);
     // Reported, never rewritten: replacing a file the user may have edited is
     // their decision, so a plain init leaves both exactly as they were.
     assert_eq!(
@@ -794,8 +794,12 @@ fn refresh_replaces_drifted_files_without_touching_configuration() {
     .expect("refresh");
 
     assert!(report.files_outdated.is_empty());
-    assert!(report.files_written.contains(&"CLAUDE.md".to_owned()));
-    assert_ne!(
+    assert!(report
+        .files_written
+        .contains(&".claude/skills/forgeguard-engineering/SKILL.md".to_owned()));
+    // A refresh updates what ForgeGuard ships and stops there.
+    assert!(!report.files_written.contains(&"CLAUDE.md".to_owned()));
+    assert_eq!(
         fs::read_to_string(directory.path().join("CLAUDE.md")).expect("read policy"),
         "hand written\n"
     );
@@ -831,10 +835,50 @@ fn force_reinstalls_files_but_keeps_configuration() {
         fs::read_to_string(&configuration).expect("read config"),
         tuned
     );
-    assert_ne!(
+    assert_eq!(
         fs::read_to_string(directory.path().join("CLAUDE.md")).expect("read policy"),
         "hand written\n"
     );
+}
+
+/// The whole point of the guard: --force and --refresh exist to reinstall what
+/// ForgeGuard ships, and neither is a licence to rewrite the user's own file.
+#[test]
+fn a_user_edited_policy_file_survives_force_and_refresh() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("Cargo.toml"),
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write manifest");
+    fs::write(directory.path().join("CLAUDE.md"), "# My rules\n").expect("seed claude policy");
+    fs::write(directory.path().join("AGENTS.md"), "# My rules\n").expect("seed codex policy");
+
+    for options in [
+        InitOptions {
+            force: true,
+            refresh: false,
+            agents: vec![AgentTarget::Claude, AgentTarget::Codex],
+        },
+        InitOptions {
+            force: false,
+            refresh: true,
+            agents: vec![AgentTarget::Claude, AgentTarget::Codex],
+        },
+    ] {
+        let report = initialize_project(directory.path(), &options).expect("install");
+        assert_eq!(
+            report.files_kept,
+            vec!["CLAUDE.md".to_owned(), "AGENTS.md".to_owned()]
+        );
+        for policy in ["CLAUDE.md", "AGENTS.md"] {
+            assert_eq!(
+                fs::read_to_string(directory.path().join(policy)).expect("read policy"),
+                "# My rules\n",
+                "{policy} was rewritten"
+            );
+        }
+    }
 }
 
 #[cfg(unix)]

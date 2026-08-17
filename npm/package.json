@@ -1,6 +1,6 @@
 {
   "name": "@suiflex/forgeguard",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Token-efficient quality layer for AI coding agents",
   "license": "MIT",
   "repository": {

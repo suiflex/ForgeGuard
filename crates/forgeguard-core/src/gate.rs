@@ -5,9 +5,11 @@ use anyhow::Result;
 use crate::{
     baseline::Baseline,
     config::ForgeGuardConfig,
+    coverage::changed_coverage_finding,
+    git::changed_scope,
     model::{GateReport, GateStatus, GateSummary, Severity},
     runner::run_checks,
-    scanner::{scan_project, ScanOptions},
+    scanner::{scan_changed_project, scan_project, ScanOptions},
 };
 
 #[derive(Debug, Clone, Default)]
@@ -21,13 +23,36 @@ pub fn run_gate(
     config: &ForgeGuardConfig,
     options: &GateOptions,
 ) -> Result<GateReport> {
-    let mut findings = scan_project(
+    let findings = scan_project(
         root,
         &config.scan,
         &ScanOptions {
             paths: options.paths.clone(),
         },
     )?;
+    finish_gate(root, config, options.skip_commands, findings)
+}
+
+pub fn run_changed_gate(
+    root: &Path,
+    config: &ForgeGuardConfig,
+    skip_commands: bool,
+    base: Option<&str>,
+) -> Result<GateReport> {
+    let scope = changed_scope(root, base)?;
+    let mut findings = scan_changed_project(root, &config.scan, &scope)?;
+    if let Some(finding) = changed_coverage_finding(root, &config.scan, &scope)? {
+        findings.push(finding);
+    }
+    finish_gate(root, config, skip_commands, findings)
+}
+
+fn finish_gate(
+    root: &Path,
+    config: &ForgeGuardConfig,
+    skip_commands: bool,
+    mut findings: Vec<crate::Finding>,
+) -> Result<GateReport> {
     findings.dedup_by(|left, right| {
         left.rule_id == right.rule_id && left.path == right.path && left.line == right.line
     });
@@ -36,7 +61,7 @@ pub fn run_gate(
         Some(baseline) => baseline.filter(&mut findings),
         None => 0,
     };
-    let checks = if options.skip_commands {
+    let checks = if skip_commands {
         Vec::new()
     } else {
         run_checks(root, &config.commands)

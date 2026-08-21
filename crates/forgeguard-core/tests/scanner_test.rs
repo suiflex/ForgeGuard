@@ -881,3 +881,194 @@ export async function loadUser(id) { return prisma.user.findMany({ where: { id }
             && finding.path.as_path() == std::path::Path::new("service.ts")
     }));
 }
+
+#[test]
+fn explicit_changed_scope_still_honors_test_exclusion() {
+    let directory = tempdir().expect("temp directory");
+    fs::create_dir(directory.path().join("tests")).expect("create tests");
+    fs::write(
+        directory.path().join("tests/fixture.ts"),
+        "const key = \"ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ\";\n",
+    )
+    .expect("write test fixture");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions {
+            paths: Some(vec![std::path::PathBuf::from("tests/fixture.ts")]),
+        },
+    )
+    .expect("scan changed test path");
+
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn detects_complexity_secrets_and_direct_taint_without_exposing_the_secret() {
+    let directory = tempdir().expect("temp directory");
+    let branches = (0..16)
+        .map(|index| format!("if (value === {index}) return {index};"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(
+        directory.path().join("service.ts"),
+        format!(
+            r#"// ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij is documentation, not a credential value.
+const key = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ";
+function risky(command) {{ child_process.exec(command); }}
+function complex(value) {{
+{branches}
+return -1;
+}}
+"#
+        ),
+    )
+    .expect("write source");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    for rule in ["FG-CPLX-001", "FG-SEC-001", "FG-SEC-003"] {
+        assert!(
+            findings.iter().any(|finding| finding.rule_id == rule),
+            "missing {rule}"
+        );
+    }
+    assert!(!findings
+        .iter()
+        .any(|finding| finding.evidence.contains("ghp_")));
+    assert_eq!(
+        findings
+            .iter()
+            .filter(|finding| finding.rule_id == "FG-SEC-001")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn detects_redacted_secrets_in_configuration_but_ignores_comments() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("settings.yaml"),
+        "# token: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij\ntoken: ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ\n",
+    )
+    .expect("write config");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    let secrets = findings
+        .iter()
+        .filter(|finding| finding.rule_id == "FG-SEC-001")
+        .collect::<Vec<_>>();
+    assert_eq!(secrets.len(), 1);
+    assert_eq!(secrets[0].line, 2);
+    assert!(!secrets[0].evidence.contains("ghp_"));
+}
+
+#[test]
+fn follows_assignment_taint_and_recognizes_sanitizers_and_security_sinks() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("security.ts"),
+        r#"import fs from "fs";
+function readUserFile(input) {
+  const requested = input;
+  return fs.readFile(requested);
+}
+function renderUnsafe(input) {
+  const markup = input;
+  element.innerHTML = markup;
+}
+function renderSafe(input) {
+  const markup = escapeHtml(input);
+  element.innerHTML = markup;
+}
+function hash(value) { return createHash("sha1").update(value); }
+app.post("/users", createUser);
+app.post("/authors", createAuthor);
+app.post("/safe", requireAuth, createUser);
+try { work(); } catch (error) {}
+"#,
+    )
+    .expect("write TypeScript");
+    fs::write(
+        directory.path().join("decode.py"),
+        "import yaml\ndef decode(value):\n    return yaml.load(value)\n\ntry:\n    work()\nexcept Exception:\n    pass\n",
+    )
+    .expect("write Python");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    for rule in [
+        "FG-SEC-004",
+        "FG-SEC-005",
+        "FG-SEC-006",
+        "FG-SEC-007",
+        "FG-AUTH-001",
+        "FG-ERR-001",
+    ] {
+        assert!(
+            findings.iter().any(|finding| finding.rule_id == rule),
+            "missing {rule}: {findings:#?}"
+        );
+    }
+    assert_eq!(
+        findings
+            .iter()
+            .filter(|finding| finding.rule_id == "FG-SEC-006")
+            .count(),
+        1,
+        "sanitized assignment must not be reported"
+    );
+    assert_eq!(
+        findings
+            .iter()
+            .filter(|finding| finding.rule_id == "FG-AUTH-001")
+            .count(),
+        2,
+        "author is not auth, while requireAuth is an explicit access-control signal"
+    );
+}
+
+#[test]
+fn follows_assignment_into_a_sensitive_wrapper_defined_in_another_file() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("database.ts"),
+        "import { PrismaClient } from '@prisma/client';\nconst prisma = new PrismaClient();\nexport function run(query) { prisma.user.findMany(query); }\n",
+    )
+    .expect("write wrapper");
+    fs::write(
+        directory.path().join("service.ts"),
+        "import { run } from './database';\nfunction execute(input) { const query = input; run(query); }\n",
+    )
+    .expect("write caller");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    assert!(findings.iter().any(|finding| {
+        finding.rule_id == "FG-SEC-003"
+            && finding.path.as_path() == std::path::Path::new("service.ts")
+    }));
+}

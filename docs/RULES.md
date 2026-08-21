@@ -36,6 +36,50 @@ Informational name-based fallback for unresolved receivers such as a generic `cl
 
 Warns on common fan-out patterns such as `Promise.all(collection.map(...))` and `join_all`. Use a concurrency limit for collections without a hard upper bound.
 
+## FG-CPLX-001 — High function complexity
+
+Warns when a function exceeds the bounded structural complexity threshold. Changed-code review retains the finding when any line in that function changed.
+
+## FG-SEC-001 — Hardcoded credential
+
+Error-level detection for high-confidence credential formats and private-key headers in source strings and common configuration files. Evidence is always redacted.
+
+## FG-SEC-002 — Dynamic sensitive operation
+
+Informational security hotspot for non-literal dynamic evaluation or shell execution. Review whether the value can be attacker-controlled.
+
+## FG-SEC-003 — Tainted function data reaches a sensitive sink
+
+Informational hotspot when function data reaches a command, query, or network sink through direct use or bounded assignment propagation. Unique local wrapper summaries allow this evidence to cross files; recognized escaping/sanitizing calls stop propagation.
+
+## FG-SEC-004 — Weak cryptography or TLS configuration
+
+Warns on high-confidence MD5/SHA-1 hashing APIs, obsolete SSL/TLS versions, or disabled certificate verification. The rule does not label non-security checksums as exploitable; review the use context.
+
+## FG-SEC-005 — Unsafe deserialization
+
+Warns on object deserializers such as pickle, marshal, unsafe YAML loaders, `unserialize`, and generic object deserialization APIs. Prefer non-executable data formats or restricted loaders.
+
+## FG-SEC-006 — Tainted data reaches an HTML sink
+
+Warns when parameter-derived data reaches known raw-HTML calls or assignments such as `innerHTML`. Recognized HTML escaping/sanitizing calls stop the bounded flow.
+
+## FG-SEC-007 — Tainted path reaches a filesystem sink
+
+Informational hotspot when parameter-derived data reaches a filesystem API through direct use or assignments. Constrain the resolved path to an allowed root; normalization alone is not treated as sanitization.
+
+## FG-AUTH-001 — Mutating route requires access-control review
+
+Informational hotspot for common mutating route registrations that do not visibly declare auth, policy, permission, role, guard, or middleware checks. Inherited controls may satisfy the requirement.
+
+## FG-ERR-001 — Exception is swallowed
+
+Warns on structurally empty `catch`, `except`, or `rescue` handlers. Richer dead-code, unused-import, nullability, and resource-lifetime analysis remains delegated to the project's compiler and linter.
+
+## FG-COV-001 — Changed-line coverage below policy
+
+Deterministic finding when an explicitly configured LCOV report is missing or coverable added/edited lines fall below `scan.min_changed_coverage`. ForgeGuard imports the report; the repository's existing test tooling generates it.
+
 ## FG-DRY-001 — Potential duplicated implementation
 
 Informational cross-file duplicate block signal. Extract only when the duplicated code represents the same responsibility and should evolve together.
@@ -43,6 +87,10 @@ Informational cross-file duplicate block signal. Extract only when the duplicate
 ## FG-DRY-002 — Potential renamed duplicated implementation
 
 Informational same-language function clone with local identifiers alpha-normalized. Operators, literals, member names, and imported API names remain significant. This is Type-2 clone evidence, not semantic business-logic equivalence.
+
+## FG-DRY-003 — Potential duplicated business operation
+
+Informational same-language signal for differently structured functions that invoke the same set of at least three distinct operations. It is deliberately a review hint: only domain invariants can prove business equivalence.
 
 ## FG-PARSE-001 — Structural analysis skipped
 

@@ -71,7 +71,9 @@ A blocked gate may cause the host agent to use another turn to fix real failures
 - Cross-agent material-ambiguity guard: native context hooks for Claude, Codex, Cursor, and Antigravity; shared skill fallback for OpenCode.
 - Session-scoped objective, todo, confidence, hill-climbability, auto-poke, resume, and scope-drift state.
 - One `forgeguard-engineering` skill with conditional clean-code, algorithm, backend, frontend, mobile, database, AI, and testing references.
-- Static rules for nested iteration, repeated linear lookup, sorting in loops, database I/O in loops, external requests in loops, unbounded fan-out, `SELECT *`, and potential duplicated blocks.
+- Static rules for nested iteration, repeated linear lookup, sorting in loops, database/network I/O in loops, unbounded fan-out, complexity, hardcoded credentials, bounded taint flow, weak crypto/TLS, unsafe deserialization, XSS/path sinks, swallowed exceptions, access-control hotspots, `SELECT *`, and exact/renamed/same-operation duplicates.
+- Compiler/linter delegation for dead code, unused imports, nullability, resource lifetime, and ecosystem-specific correctness. Optional dependency-audit, license-policy, and SBOM commands are discovered but disabled by default so realtime gates make no network calls.
+- Clean-as-you-code review at added/edited-line scope, with optional Git base-ref comparison and changed-line LCOV policy.
 - Automatic formatter, linter, type-check, test, and build command discovery.
 - `default`, `lite`, and `strict` operating modes with project and global persistence.
 - Committed finding baselines for adopting strict gates without accepting new debt.
@@ -263,6 +265,13 @@ Review only files changed in Git:
 forgeguard review
 ```
 
+Review branch or pull-request changes against a base revision:
+
+```bash
+forgeguard review --base origin/main
+forgeguard gate --changed --base origin/main
+```
+
 Run all static rules but skip repository commands:
 
 ```bash
@@ -415,6 +424,8 @@ max_file_bytes = 1000000
 include_tests = false
 extra_excludes = ["generated/"]
 duplicate_block_lines = 6
+coverage_report = "coverage/lcov.info"
+min_changed_coverage = 80
 
 [policies]
 warnings_block = false
@@ -459,7 +470,7 @@ Version 1 configs preserve the old Strict behavior that blocks only Error findin
 
 Per-rule `enabled`, `severity`, and `block` override global policy. `Lite` always keeps static findings nonblocking. Required command failures block in every mode.
 
-Focus state and scope checks are local and make no LLM calls. `max_retries` bounds corrective turns; `no_progress_limit` stops a session that produces no repository or task-state progress. `auto_poke` is enabled automatically by `forgeguard init`; each continuation creates a new host request and consumes model tokens, so `max_auto_pokes` defaults to three and has a hard cap of five. Set `auto_poke = false` only when manually opting out. Pending todos, confidence below `min_confidence`, or goal-contract completeness below `min_hill_climbability` keep the task active. Hill-climbability is a deterministic 0–100 completeness score: metric, baseline, target, guardrail, and verification contribute 20 points each. ForgeGuard does not guess these fields from prose. `forgeguard task start --semantic` only asks a supported host to use its native goal evaluator.
+With a global hook installed, General Guard applies task state, scope checks, evidence, and bounded auto-poke without project initialization or repository commands. `forgeguard init` activates Code Guard: the same focus contract plus `inspect → design → implement → test → review → verify`, changed-source scanning, configured checks, and reports. Each continuation creates a new host request and consumes model tokens, so `max_auto_pokes` defaults to three and has a hard cap of five. Pending todos, confidence below `min_confidence`, or goal-contract completeness below `min_hill_climbability` keep the task active. Hill-climbability is a deterministic 0–100 completeness score: metric, baseline, target, guardrail, and verification contribute 20 points each. ForgeGuard does not guess these fields from prose. `forgeguard task start --semantic` only asks a supported host to use its native goal evaluator.
 
 See [Focus, auto-poke, and hill-climbability](docs/FOCUS.md) for the lifecycle, headless behavior, token bounds, upgrade path, and examples.
 
@@ -508,8 +519,8 @@ When run in a terminal without an explicit mode, `forgeguard mode` opens the sam
 | `forgeguard doctor` | Verify configuration, Git, and required local tools. |
 | `forgeguard mode` | Check or change project/global operating mode. |
 | `forgeguard config migrate` | Upgrade config v1 to v2 without resetting commands or focus settings. |
-| `forgeguard gate` | Run static rules and configured quality commands. |
-| `forgeguard review` | Scan Git-changed files without running commands. |
+| `forgeguard gate` | Run static rules and configured quality commands; `--changed --base <ref>` scopes findings to new code. |
+| `forgeguard review` | Scan added/edited Git lines without running commands; `--base <ref>` compares a branch or pull request. |
 | `forgeguard baseline create` | Record current static findings so gates report only new findings. |
 | `forgeguard task start` | Register objective, goal metrics, todos, and optional scope prefixes. |
 | `forgeguard task todo` | Add todos or mark 1-based todo indexes complete. |

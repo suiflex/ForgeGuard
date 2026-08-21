@@ -15,6 +15,13 @@ Follow: inspect → design → implement → test → review → verify.
 - Make every changed line trace to the objective. Do not refactor adjacent code or remove pre-existing dead code; remove only orphans created by the change.
 - Choose the smallest safe design. Define only the relevant bounds, failures, complexity, I/O, and concurrency risks.
 
+## Reject AI slop
+
+- Do not add generic boilerplate, speculative abstractions, duplicate helpers, decorative comments, or dependencies without a requirement demonstrated in the repository.
+- Do not invent requirements, APIs, schemas, files, command results, metrics, or evidence. Inspect them directly; label anything still unknown as unverified.
+- Do not disguise incomplete work with placeholders, fake data, silent fallbacks, swallowed errors, or TODO-only implementations unless the user explicitly requested a stub or test fixture.
+- Deliver the smallest complete path through the real code, remove only additions made obsolete by the change, and prove changed behavior with the narrowest executable check.
+
 ## Register the goal
 
 Use the session id injected by the lifecycle hook. Run `forgeguard mode` to resolve policy: register every change in strict mode and every non-trivial change otherwise.

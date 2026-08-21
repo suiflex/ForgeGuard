@@ -49,6 +49,13 @@ pub fn detect_project(root: &Path) -> Result<ProjectDetection> {
         );
         add_command(&mut commands, "test", "cargo test --workspace", true);
         add_command(&mut commands, "build", "cargo build --workspace", true);
+        add_optional_command(
+            &mut commands,
+            "dependency-audit",
+            "cargo audit --deny warnings",
+        );
+        add_optional_command(&mut commands, "supply-chain", "cargo deny check");
+        add_optional_command(&mut commands, "sbom", "cargo cyclonedx --format json");
     }
 
     if root.join("go.mod").exists() {
@@ -62,6 +69,7 @@ pub fn detect_project(root: &Path) -> Result<ProjectDetection> {
             true,
         );
         add_command(&mut commands, "test", "go test ./...", true);
+        add_command(&mut commands, "lint", "go vet ./...", true);
         add_command(&mut commands, "build", "go build ./...", true);
     }
 
@@ -238,18 +246,18 @@ fn detect_node(
         }
     }
 
-    let runner = if root.join("pnpm-lock.yaml").exists() {
+    let (runner, package_manager) = if root.join("pnpm-lock.yaml").exists() {
         package_managers.insert("pnpm".to_owned());
-        "pnpm"
+        ("pnpm", "pnpm")
     } else if root.join("yarn.lock").exists() {
         package_managers.insert("Yarn".to_owned());
-        "yarn"
+        ("yarn", "yarn")
     } else if root.join("bun.lockb").exists() || root.join("bun.lock").exists() {
         package_managers.insert("Bun".to_owned());
-        "bun run"
+        ("bun run", "bun")
     } else {
         package_managers.insert("npm".to_owned());
-        "npm run"
+        ("npm run", "npm")
     };
 
     if let Some(scripts) = value.get("scripts").and_then(Value::as_object) {
@@ -262,6 +270,10 @@ fn detect_node(
             ("test", "test"),
             ("test:unit", "test"),
             ("build", "build"),
+            ("audit", "dependency-audit"),
+            ("licenses", "license"),
+            ("license", "license"),
+            ("sbom", "sbom"),
         ];
         for (script, name) in candidates {
             if scripts.contains_key(script) && !commands.contains_key(name) {
@@ -269,6 +281,17 @@ fn detect_node(
                 add_command(commands, name, &command, true);
             }
         }
+    }
+
+    if !commands.contains_key("dependency-audit") {
+        add_optional_command(
+            commands,
+            "dependency-audit",
+            &format!("{package_manager} audit"),
+        );
+    }
+    if package_manager == "npm" && !commands.contains_key("sbom") {
+        add_optional_command(commands, "sbom", "npm sbom --sbom-format cyclonedx");
     }
 
     Ok(())
@@ -386,6 +409,12 @@ fn detect_python(
     if source.contains("mypy") {
         add_command(commands, "typecheck", "mypy .", true);
     }
+    if source.contains("pyright") {
+        add_command(commands, "typecheck", "pyright", true);
+    }
+    if source.contains("pylint") && !commands.contains_key("lint") {
+        add_command(commands, "lint", "pylint .", true);
+    }
 
     Ok(())
 }
@@ -409,6 +438,16 @@ fn add_command(
         command: command.to_owned(),
         required,
         enabled: true,
+        timeout_seconds: 600,
+    });
+}
+
+fn add_optional_command(commands: &mut BTreeMap<String, CommandConfig>, name: &str, command: &str) {
+    commands.entry(name.to_owned()).or_insert(CommandConfig {
+        name: name.to_owned(),
+        command: command.to_owned(),
+        required: false,
+        enabled: false,
         timeout_seconds: 600,
     });
 }

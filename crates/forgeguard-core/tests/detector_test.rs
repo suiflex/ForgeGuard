@@ -20,6 +20,12 @@ fn detects_rust_workspace_commands() {
         .suggested_commands
         .iter()
         .any(|command| command.command == "cargo test --workspace"));
+    assert!(detection.suggested_commands.iter().any(|command| {
+        command.name == "dependency-audit"
+            && command.command == "cargo audit --deny warnings"
+            && !command.enabled
+            && !command.required
+    }));
 }
 
 #[test]
@@ -61,6 +67,27 @@ fn detects_node_frameworks_and_scripts() {
         .suggested_commands
         .iter()
         .any(|command| command.command == "pnpm lint"));
+    assert!(detection
+        .suggested_commands
+        .iter()
+        .any(|command| command.name == "dependency-audit" && !command.enabled));
+}
+
+#[test]
+fn detects_go_vet_as_the_native_static_analyzer() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("go.mod"),
+        "module example.test/sample\n",
+    )
+    .expect("write go.mod");
+
+    let detection = detect_project(directory.path()).expect("detect project");
+
+    assert!(detection
+        .suggested_commands
+        .iter()
+        .any(|command| command.command == "go vet ./..." && command.enabled));
 }
 
 #[test]

@@ -154,3 +154,22 @@ name = "future"
     let error = ForgeGuardConfig::load(directory.path()).expect_err("reject unknown version");
     assert!(error.to_string().contains("unsupported config version 99"));
 }
+
+#[test]
+fn changed_coverage_policy_requires_a_valid_report_configuration() {
+    let directory = tempdir().expect("temp directory");
+    fs::create_dir_all(directory.path().join(".forgeguard")).expect("create config dir");
+    fs::write(
+        directory.path().join(".forgeguard/config.toml"),
+        r#"version = 2
+[project]
+name = "coverage"
+[scan]
+min_changed_coverage = 101
+"#,
+    )
+    .expect("write config");
+
+    let error = ForgeGuardConfig::load(directory.path()).expect_err("reject invalid threshold");
+    assert!(error.to_string().contains("between 0 and 100"));
+}

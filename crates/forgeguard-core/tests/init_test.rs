@@ -54,6 +54,15 @@ fn installs_configuration_for_all_supported_agents() {
         .path()
         .join(".agents/skills/forgeguard-engineering/SKILL.md")
         .exists());
+    let engineering_skill = fs::read_to_string(
+        directory
+            .path()
+            .join(".agents/skills/forgeguard-engineering/SKILL.md"),
+    )
+    .expect("read engineering skill");
+    assert!(engineering_skill.contains("## Reject AI slop"));
+    assert!(engineering_skill.contains("Do not invent requirements, APIs, schemas"));
+    assert!(engineering_skill.contains("Do not disguise incomplete work with placeholders"));
     assert!(directory
         .path()
         .join(".agents/skills/forgeguard-engineering/agents/openai.yaml")

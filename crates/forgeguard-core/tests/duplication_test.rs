@@ -145,3 +145,43 @@ fn reports_alpha_renamed_functions_but_preserves_literals() {
             && finding.path.as_path() == std::path::Path::new("different.rs")
     }));
 }
+
+#[test]
+fn reports_different_shapes_with_the_same_business_operations() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("create.rs"),
+        r#"pub fn create_order(order: Order) {
+    validate(order);
+    save(order);
+    notify(order);
+    audit(order);
+}
+"#,
+    )
+    .expect("write first source");
+    fs::write(
+        directory.path().join("import.rs"),
+        r#"pub fn import_order(order: Order) {
+    if order.active {
+        audit(order);
+        notify(order);
+        save(order);
+        validate(order);
+    }
+}
+"#,
+    )
+    .expect("write second source");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    assert!(findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-DRY-003"));
+}

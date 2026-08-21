@@ -51,3 +51,6 @@ min_hill_climbability = 80
 [policies]
 
 [rules]
+
+[update]
+policy = "auto"

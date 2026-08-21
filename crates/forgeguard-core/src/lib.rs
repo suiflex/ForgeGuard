@@ -1,5 +1,6 @@
 pub mod baseline;
 pub mod config;
+mod coverage;
 pub mod detector;
 pub mod doctor;
 pub mod duplication;
@@ -20,7 +21,7 @@ pub use baseline::{
 pub use config::{CommandConfig, FocusConfig, ForgeGuardConfig, GuardMode};
 pub use detector::{detect_project, ProjectDetection};
 pub use doctor::{run_doctor, DoctorReport};
-pub use gate::{run_gate, GateOptions};
+pub use gate::{run_changed_gate, run_gate, GateOptions};
 pub use hook::{
     evaluate_context_hook, evaluate_scope_hook, evaluate_stop_hook, ignore_forgeguard_artifacts,
     mark_task_ready, mark_task_ready_with_confidence, render_context_hook, render_hook_decision,

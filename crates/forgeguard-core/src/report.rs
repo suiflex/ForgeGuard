@@ -147,7 +147,10 @@ pub fn render_sarif(report: &GateReport) -> Result<String, serde_json::Error> {
                 "locations": [{
                     "physicalLocation": {
                         "artifactLocation": {"uri": finding.path.to_string_lossy()},
-                        "region": {"startLine": finding.line},
+                        "region": {
+                            "startLine": finding.line,
+                            "endLine": finding.end_line.unwrap_or(finding.line),
+                        },
                     }
                 }],
                 "partialFingerprints": {

@@ -277,6 +277,8 @@ fn auto_poke_runs_bounded_evidence_phases_before_completion() {
         };
         assert!(message.contains(&format!("auto-poke {}/5", index + 1)));
         assert!(message.contains(phase));
+        assert!(message.contains("repository/tool evidence"));
+        assert!(!message.contains("work/tool evidence"));
         let task = task_state(directory.path(), "session-poke")
             .expect("read task")
             .expect("task");
@@ -597,7 +599,7 @@ fn task_contract_rejects_untrusted_paths_and_unsupported_evidence() {
 }
 
 #[test]
-fn uninitialized_code_repository_is_never_hooked_or_written_to() {
+fn uninitialized_repository_uses_only_general_guard() {
     let directory = tempdir().expect("temp directory");
     git_init(directory.path());
     fs::write(directory.path().join(".gitignore"), "node_modules/\n").expect("write gitignore");
@@ -622,17 +624,18 @@ fn uninitialized_code_repository_is_never_hooked_or_written_to() {
     assert!(
         evaluate_context_hook(directory.path(), &input, HookAgent::Codex)
             .expect("evaluate context hook")
-            .is_none()
+            .expect("general context")
+            .contains("General Guard is active")
     );
     assert!(evaluate_scope_hook(directory.path(), &input)
         .expect("evaluate scope hook")
-        .is_none());
+        .expect("general scope warning")
+        .contains("service.ts"));
     let (decision, _) = evaluate_stop_hook(directory.path(), &input).expect("evaluate hook");
-    assert_eq!(decision, HookDecision::Pass);
+    assert!(matches!(decision, HookDecision::Block(_)));
 
-    // Without `forgeguard init` the hooks own nothing in the repository.
+    // General Guard stores task state but never opts into repository policy.
     assert!(!directory.path().join(".forgeguard/config.toml").exists());
-    assert!(!directory.path().join(".forgeguard/.gitignore").exists());
     assert!(!directory
         .path()
         .join(".forgeguard/reports/latest.json")
@@ -672,7 +675,7 @@ fn initialized_repository_activates_every_hook() {
         evaluate_context_hook(directory.path(), &input, HookAgent::Codex)
             .expect("evaluate context hook")
             .expect("context")
-            .contains("Change only source")
+            .contains("inspect → design → implement → test → review → verify")
     );
     assert!(evaluate_scope_hook(directory.path(), &input)
         .expect("evaluate scope hook")
@@ -684,6 +687,147 @@ fn initialized_repository_activates_every_hook() {
         .path()
         .join(".forgeguard/reports/latest.json")
         .is_file());
+}
+
+#[test]
+fn stop_hook_blocks_only_new_production_placeholders() {
+    let directory = tempdir().expect("temp directory");
+    git_init(directory.path());
+    let mut config = ForgeGuardConfig::new("sample", Vec::new());
+    config.focus.enabled = false;
+    config.save(directory.path()).expect("save config");
+    fs::write(
+        directory.path().join("service.rs"),
+        "fn value() -> u8 { 1 }\n",
+    )
+    .expect("write source");
+    git_commit_all(directory.path());
+
+    fs::write(
+        directory.path().join("service.rs"),
+        "fn value() -> u8 { todo!() }\n",
+    )
+    .expect("add placeholder");
+    let input = format!(
+        r#"{{"cwd":"{}","session_id":"new-placeholder"}}"#,
+        directory.path().display()
+    );
+    let (decision, _) = evaluate_stop_hook(directory.path(), &input).expect("evaluate hook");
+    let HookDecision::Block(message) = decision else {
+        panic!("new production placeholder must block completion");
+    };
+    assert!(message.contains("anti-slop hook blocked completion"));
+    assert!(message.contains("service.rs:1"));
+
+    fs::write(
+        directory.path().join("service.rs"),
+        "fn value() -> u8 { 2 }\n",
+    )
+    .expect("complete implementation");
+    let fixed = format!(
+        r#"{{"cwd":"{}","session_id":"fixed-placeholder"}}"#,
+        directory.path().display()
+    );
+    assert_eq!(
+        evaluate_stop_hook(directory.path(), &fixed)
+            .expect("evaluate fixed hook")
+            .0,
+        HookDecision::Pass
+    );
+
+    fs::write(
+        directory.path().join("service.rs"),
+        "fn value() -> u8 { panic!(\"TODO\") }\n",
+    )
+    .expect("add panic placeholder");
+    let panic_placeholder = format!(
+        r#"{{"cwd":"{}","session_id":"panic-placeholder"}}"#,
+        directory.path().display()
+    );
+    assert!(matches!(
+        evaluate_stop_hook(directory.path(), &panic_placeholder)
+            .expect("evaluate panic hook")
+            .0,
+        HookDecision::Block(_)
+    ));
+    fs::write(
+        directory.path().join("service.rs"),
+        "fn value() -> u8 { 2 }\n",
+    )
+    .expect("remove panic placeholder");
+    fs::write(
+        directory.path().join("service.ts"),
+        "export function pending() { throw new Error('TODO'); }\n",
+    )
+    .expect("add TypeScript placeholder");
+    let typescript = format!(
+        r#"{{"cwd":"{}","session_id":"typescript-placeholder"}}"#,
+        directory.path().display()
+    );
+    assert!(matches!(
+        evaluate_stop_hook(directory.path(), &typescript)
+            .expect("evaluate TypeScript hook")
+            .0,
+        HookDecision::Block(_)
+    ));
+    fs::write(
+        directory.path().join("service.ts"),
+        "// throw new Error('TODO');\nexport const ready = 1;\n",
+    )
+    .expect("replace placeholder with comment");
+    let comment = format!(
+        r#"{{"cwd":"{}","session_id":"placeholder-comment"}}"#,
+        directory.path().display()
+    );
+    assert_eq!(
+        evaluate_stop_hook(directory.path(), &comment)
+            .expect("evaluate comment hook")
+            .0,
+        HookDecision::Pass
+    );
+
+    fs::write(
+        directory.path().join("service.rs"),
+        "fn value() -> u8 { todo!(\"old\") }\n",
+    )
+    .expect("write committed placeholder");
+    git_commit_all(directory.path());
+    fs::write(
+        directory.path().join("service.rs"),
+        "fn value() -> u8 { todo!(\"new\") }\n",
+    )
+    .expect("replace committed placeholder");
+    let replaced = format!(
+        r#"{{"cwd":"{}","session_id":"replaced-placeholder"}}"#,
+        directory.path().display()
+    );
+    assert!(matches!(
+        evaluate_stop_hook(directory.path(), &replaced)
+            .expect("evaluate replaced hook")
+            .0,
+        HookDecision::Block(_)
+    ));
+    fs::write(
+        directory.path().join("service.rs"),
+        "fn value() -> u8 { todo!( \"old\" ) }\nfn ready() -> u8 { 3 }\n",
+    )
+    .expect("change beside committed placeholder");
+    fs::create_dir(directory.path().join("tests")).expect("create tests");
+    fs::write(
+        directory.path().join("tests/pending_test.rs"),
+        "fn fixture() { unimplemented!() }\n",
+    )
+    .expect("write test placeholder");
+    let existing = format!(
+        r#"{{"cwd":"{}","session_id":"existing-placeholder"}}"#,
+        directory.path().display()
+    );
+    assert_eq!(
+        evaluate_stop_hook(directory.path(), &existing)
+            .expect("evaluate existing hook")
+            .0,
+        HookDecision::Pass
+    );
 }
 
 #[test]
@@ -906,7 +1050,7 @@ fn auto_gate_passes_for_repo_without_code() {
 }
 
 #[test]
-fn global_hooks_ignore_uninitialized_repository_without_code() {
+fn global_hooks_supervise_uninitialized_non_code_work() {
     let directory = tempdir().expect("temp directory");
     git_init(directory.path());
     fs::write(
@@ -930,17 +1074,115 @@ fn global_hooks_ignore_uninitialized_repository_without_code() {
     assert!(
         evaluate_context_hook(directory.path(), &input, HookAgent::Codex)
             .expect("evaluate context hook")
-            .is_none()
+            .expect("general context")
+            .contains("General Guard is active")
     );
+    let (decision, cache_hit) =
+        evaluate_stop_hook(directory.path(), &input).expect("evaluate stop hook");
+    assert!(matches!(decision, HookDecision::Block(_)));
+    assert!(!cache_hit);
+    let (_, cache_hit) =
+        evaluate_stop_hook(directory.path(), &input).expect("evaluate duplicate stop hook");
+    assert!(cache_hit);
     assert_eq!(
-        evaluate_stop_hook(directory.path(), &input)
-            .expect("evaluate stop hook")
-            .0,
-        HookDecision::Pass
+        task_state(directory.path(), "mcp-session")
+            .expect("read task")
+            .expect("task")
+            .auto_pokes,
+        1
     );
     assert!(evaluate_scope_hook(directory.path(), &input)
         .expect("evaluate scope hook")
-        .is_none());
+        .is_some());
+    assert!(!directory
+        .path()
+        .join(".forgeguard/reports/latest.json")
+        .exists());
+}
+
+#[test]
+fn general_guard_works_outside_a_git_repository() {
+    let directory = tempdir().expect("temp directory");
+    start_task(
+        directory.path(),
+        "general-session",
+        "Review a marketing brief",
+        &[],
+        false,
+    )
+    .expect("start general task");
+    let input = format!(
+        r#"{{"cwd":"{}","session_id":"general-session"}}"#,
+        directory.path().display()
+    );
+
+    let context = evaluate_context_hook(directory.path(), &input, HookAgent::Codex)
+        .expect("evaluate context hook")
+        .expect("general context");
+    assert!(context.contains("General Guard is active"));
+    assert!(context.contains("work scope not constrained"));
+    let (decision, _) = evaluate_stop_hook(directory.path(), &input).expect("evaluate stop hook");
+    let HookDecision::Block(message) = decision else {
+        panic!("general task must continue");
+    };
+    assert!(message.contains("work/tool evidence"));
+    assert!(!message.contains("repository/tool evidence"));
+    assert!(!directory.path().join(".forgeguard/config.toml").exists());
+    assert!(!directory
+        .path()
+        .join(".forgeguard/reports/latest.json")
+        .exists());
+}
+
+#[test]
+fn general_guard_uses_non_code_review_phases() {
+    let directory = tempdir().expect("temp directory");
+    start_task_with_contract(
+        directory.path(),
+        "general-review",
+        "Review a marketing brief",
+        &[],
+        false,
+        GoalContract {
+            metric: Some("approved claims".to_owned()),
+            baseline: Some("0".to_owned()),
+            target: Some("3".to_owned()),
+            guardrails: vec!["no unsupported claims".to_owned()],
+            verifications: vec!["source notes checked".to_owned()],
+        },
+        &["Review every claim".to_owned()],
+    )
+    .expect("start general task");
+    update_task_todos(directory.path(), "general-review", &[], &[1]).expect("complete todo");
+    mark_task_ready_with_confidence(
+        directory.path(),
+        "general-review",
+        &["source notes: 3 claims checked".to_owned()],
+        Some(90),
+    )
+    .expect("mark ready");
+    let input = format!(
+        r#"{{"cwd":"{}","session_id":"general-review"}}"#,
+        directory.path().display()
+    );
+    let (first, _) = evaluate_stop_hook(directory.path(), &input).expect("first review phase");
+    assert!(matches!(first, HookDecision::Block(_)));
+
+    mark_task_ready_with_confidence(
+        directory.path(),
+        "general-review",
+        &["source notes: 3 claims rechecked".to_owned()],
+        Some(90),
+    )
+    .expect("mark ready again");
+    let (second, _) = evaluate_stop_hook(directory.path(), &input).expect("second review phase");
+    let HookDecision::Block(message) = second else {
+        panic!("general review must continue");
+    };
+    assert!(message.contains("verify the deliverable"));
+    assert!(!message.contains("tests"));
+    assert!(!message.contains("full diff"));
+    assert!(!message.contains("repository"));
 }
 
 #[test]

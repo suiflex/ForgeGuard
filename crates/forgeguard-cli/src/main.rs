@@ -10,14 +10,13 @@ use clap::{Parser, Subcommand, ValueEnum};
 use forgeguard_core::{
     config::{ForgeGuardConfig, UpdatePolicy, CONFIG_FILE},
     create_baseline_with_config, detect_installed_agents, detect_project, evaluate_context_hook,
-    evaluate_scope_hook, evaluate_stop_hook,
-    git::changed_files,
-    initialize_global, initialize_project, mark_task_ready_with_confidence, render_context_hook,
-    render_hook_decision, render_scope_warning,
+    evaluate_scope_hook, evaluate_stop_hook, initialize_global, initialize_project,
+    mark_task_ready_with_confidence, render_context_hook, render_hook_decision,
+    render_scope_warning,
     report::{render_detection, render_doctor, render_gate, render_gate_compact, render_sarif},
-    run_doctor, run_gate, start_task_with_contract, task_state, update_task_todos, AgentTarget,
-    GateOptions, GateReport, GateStatus, GoalContract, GuardMode, HookAgent, HookDecision,
-    InitOptions, BASELINE_FILE, LANGUAGE_CAPABILITIES, RULES,
+    run_changed_gate, run_doctor, run_gate, start_task_with_contract, task_state,
+    update_task_todos, AgentTarget, GateOptions, GateReport, GateStatus, GoalContract, GuardMode,
+    HookAgent, HookDecision, InitOptions, BASELINE_FILE, LANGUAGE_CAPABILITIES, RULES,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -99,6 +98,9 @@ enum Commands {
         no_run: bool,
         #[arg(long)]
         changed: bool,
+        /// Compare new code against this Git revision (for example origin/main).
+        #[arg(long, requires = "changed")]
+        base: Option<String>,
     },
     /// Review only changed files with ForgeGuard static rules.
     Review {
@@ -106,6 +108,9 @@ enum Commands {
         json: bool,
         #[arg(long, value_enum, default_value = "full", conflicts_with = "json")]
         output: OutputArg,
+        /// Compare new code against this Git revision (for example origin/main).
+        #[arg(long)]
+        base: Option<String>,
     },
     /// Record current static findings so gates report only new findings.
     Baseline {
@@ -117,7 +122,7 @@ enum Commands {
         #[command(subcommand)]
         command: HookCommands,
     },
-    /// Track a session objective, scope, and evidence for bounded agent work.
+    /// Track a general or code objective, scope, and evidence for bounded agent work.
     Task {
         #[command(subcommand)]
         command: Box<TaskCommands>,
@@ -215,7 +220,7 @@ enum HookCommands {
 
 #[derive(Debug, Subcommand)]
 enum TaskCommands {
-    /// Register the exact objective before a non-trivial code change.
+    /// Register the exact objective before non-trivial general or code work.
     Start {
         #[arg(long)]
         session: String,
@@ -517,6 +522,7 @@ fn execute() -> Result<ExitCode> {
             output,
             no_run,
             changed,
+            base,
         } => {
             let config = ForgeGuardConfig::load(&root).context(
                 "ForgeGuard is not initialized; run `forgeguard init` in the repository first",
@@ -524,38 +530,29 @@ fn execute() -> Result<ExitCode> {
             if !json {
                 maybe_gate_update(&root)?;
             }
-            let paths = if changed {
-                Some(changed_files(&root)?)
+            let report = if changed {
+                run_changed_gate(&root, &config, no_run, base.as_deref())?
             } else {
-                None
+                run_gate(
+                    &root,
+                    &config,
+                    &GateOptions {
+                        skip_commands: no_run,
+                        paths: None,
+                    },
+                )?
             };
-            let report = run_gate(
-                &root,
-                &config,
-                &GateOptions {
-                    skip_commands: no_run,
-                    paths,
-                },
-            )?;
             render_gate_output(&report, json, output)?;
             Ok(exit_code_for_status(report.status))
         }
-        Commands::Review { json, output } => {
+        Commands::Review { json, output, base } => {
             let config = ForgeGuardConfig::load(&root).context(
                 "ForgeGuard is not initialized; run `forgeguard init` in the repository first",
             )?;
             if !json {
                 maybe_gate_update(&root)?;
             }
-            let paths = Some(changed_files(&root)?);
-            let report = run_gate(
-                &root,
-                &config,
-                &GateOptions {
-                    skip_commands: true,
-                    paths,
-                },
-            )?;
+            let report = run_changed_gate(&root, &config, true, base.as_deref())?;
             render_gate_output(&report, json, output)?;
             Ok(exit_code_for_status(report.status))
         }
@@ -1620,6 +1617,16 @@ mod tests {
                 output: OutputArg::Sarif,
                 ..
             }
+        ));
+
+        let review = Cli::try_parse_from(["forgeguard", "review", "--base", "origin/main"])
+            .expect("parse base review");
+        assert!(matches!(
+            review.command,
+            Commands::Review {
+                base: Some(ref base),
+                ..
+            } if base == "origin/main"
         ));
     }
 }

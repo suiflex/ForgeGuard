@@ -94,6 +94,7 @@ pub fn scan_duplicate_blocks(
                 blocking: false,
                 path: target.path.clone(),
                 line: target.line,
+                end_line: None,
                 evidence: format!(
                     "A similar {}-line block also appears at {}:{}",
                     block_lines,
@@ -105,6 +106,12 @@ pub fn scan_duplicate_blocks(
         }
     }
     findings.extend(scan_renamed_duplicate_blocks(
+        root,
+        files,
+        block_lines,
+        focus_paths,
+    ));
+    findings.extend(scan_behavioral_duplicates(
         root,
         files,
         block_lines,
@@ -187,12 +194,89 @@ fn scan_renamed_duplicate_blocks(
                 blocking: false,
                 path: target.path.clone(),
                 line: target.line,
+                end_line: None,
                 evidence: format!(
                     "An alpha-renamed function also appears at {}:{}",
                     other.path.display(),
                     other.line
                 ),
                 recommendation: "Confirm both functions share responsibility before extracting a common implementation.".to_owned(),
+            });
+        }
+    }
+    findings
+}
+
+fn scan_behavioral_duplicates(
+    root: &Path,
+    files: &[PathBuf],
+    minimum_lines: usize,
+    focus_paths: Option<&BTreeSet<PathBuf>>,
+) -> Vec<Finding> {
+    let mut groups = BTreeMap::<String, Vec<CloneOccurrence>>::new();
+    for path in files {
+        let Ok(source) = fs::read_to_string(path) else {
+            continue;
+        };
+        // forgeguard: allow FG-ALG-001 -- functions are disjoint and each file is bounded by scan limits
+        for function in canonical_functions(path, &source, minimum_lines) {
+            let Some(behavior) = function.behavior else {
+                continue;
+            };
+            groups
+                .entry(format!("{}:{behavior}", function.profile))
+                .or_default()
+                .push(CloneOccurrence {
+                    path: path.strip_prefix(root).unwrap_or(path).to_path_buf(),
+                    line: function.line,
+                    canonical: function.canonical,
+                    original: function.original,
+                });
+        }
+    }
+
+    let mut findings = Vec::new();
+    let mut reported_pairs = BTreeSet::new();
+    for occurrences in groups.into_values() {
+        let Some(first) = occurrences.first() else {
+            continue;
+        };
+        // forgeguard: allow FG-ALG-001 -- one bounded comparison per occurrence in this hash group
+        for duplicate in occurrences.iter().skip(1) {
+            if first.path == duplicate.path || first.canonical == duplicate.canonical {
+                continue;
+            }
+            let (target, other) = match focus_paths {
+                Some(focus) if focus.contains(&duplicate.path) => (duplicate, first),
+                Some(focus) if focus.contains(&first.path) => (first, duplicate),
+                Some(_) => continue,
+                None => (duplicate, first),
+            };
+            let pair = if first.path <= duplicate.path {
+                (first.path.clone(), duplicate.path.clone())
+            } else {
+                (duplicate.path.clone(), first.path.clone())
+            };
+            if !reported_pairs.insert(pair) {
+                continue;
+            }
+            findings.push(Finding {
+                rule_id: "FG-DRY-003".to_owned(),
+                title: "Potential duplicated business operation".to_owned(),
+                severity: Severity::Info,
+                confidence: rules::metadata("FG-DRY-003")
+                    .map(|rule| rule.confidence)
+                    .unwrap_or(EvidenceConfidence::Heuristic),
+                blocking: false,
+                path: target.path.clone(),
+                line: target.line,
+                end_line: None,
+                evidence: format!(
+                    "A differently structured function invokes the same API operations at {}:{}",
+                    other.path.display(),
+                    other.line
+                ),
+                recommendation: "Compare invariants and business responsibility; consolidate only when both implementations must evolve together.".to_owned(),
             });
         }
     }

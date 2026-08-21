@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs::{self, File},
     hash::Hasher,
     io::Read,
@@ -7,6 +8,12 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChangedScope {
+    pub paths: Vec<PathBuf>,
+    pub lines: BTreeMap<PathBuf, Vec<(usize, usize)>>,
+}
 
 pub fn repository_roots(root: &Path) -> Result<Vec<PathBuf>> {
     let root = root
@@ -61,6 +68,152 @@ pub fn repository_roots(root: &Path) -> Result<Vec<PathBuf>> {
 pub fn changed_files(root: &Path) -> Result<Vec<std::path::PathBuf>> {
     let output = status_output(root)?;
     changed_paths(root, &output.stdout)
+}
+
+/// Return readable files changed from `base` (or `HEAD`) and the added/edited
+/// line ranges in their current contents. Untracked files are wholly in scope.
+pub fn changed_scope(root: &Path, base: Option<&str>) -> Result<ChangedScope> {
+    let comparison = match base {
+        Some(base) => merge_base(root, base)?,
+        None => "HEAD".to_owned(),
+    };
+    let comparison_exists = revision_exists(root, &comparison)?;
+    let mut paths = if base.is_some() {
+        diff_paths(root, &comparison)?
+    } else {
+        changed_files(root)?
+    };
+    for path in changed_files(root)? {
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    paths.retain(|path| root.join(path).is_file());
+    paths.sort();
+    paths.dedup();
+
+    let mut lines = BTreeMap::new();
+    // ponytail: one Git diff per changed file; parse one combined patch if large-change latency is measured.
+    for path in &paths {
+        let ranges = if comparison_exists {
+            diff_line_ranges(root, &comparison, path)?
+        } else {
+            Vec::new()
+        };
+        lines.insert(
+            path.clone(),
+            if ranges.is_empty()
+                && (!comparison_exists || !exists_at_revision(root, &comparison, path)?)
+            {
+                vec![(1, usize::MAX)]
+            } else {
+                ranges
+            },
+        );
+    }
+    Ok(ChangedScope { paths, lines })
+}
+
+fn merge_base(root: &Path, base: &str) -> Result<String> {
+    if !revision_exists(root, base)? {
+        bail!("Git base revision does not exist: {base}");
+    }
+    let output = Command::new("git")
+        .args(["merge-base", "HEAD", base])
+        .current_dir(root)
+        .output()
+        .context("failed to execute git merge-base")?;
+    if !output.status.success() {
+        bail!(
+            "Git base revision {base} has no merge base with HEAD: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn revision_exists(root: &Path, revision: &str) -> Result<bool> {
+    Ok(Command::new("git")
+        .args(["rev-parse", "--verify", &format!("{revision}^{{commit}}")])
+        .current_dir(root)
+        .output()
+        .context("failed to inspect Git revision")?
+        .status
+        .success())
+}
+
+fn diff_paths(root: &Path, comparison: &str) -> Result<Vec<PathBuf>> {
+    let output = Command::new("git")
+        .args([
+            "diff",
+            "--name-only",
+            "-z",
+            comparison,
+            "--",
+            ".",
+            ":(exclude).forgeguard/cache",
+            ":(exclude).forgeguard/reports",
+        ])
+        .current_dir(root)
+        .output()
+        .context("failed to execute git diff")?;
+    if !output.status.success() {
+        bail!(
+            "git diff against {comparison} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(path_from_git_bytes)
+        .collect())
+}
+
+fn diff_line_ranges(root: &Path, comparison: &str, path: &Path) -> Result<Vec<(usize, usize)>> {
+    let output = Command::new("git")
+        .args(["diff", "--unified=0", "--no-ext-diff", comparison, "--"])
+        .arg(path)
+        .current_dir(root)
+        .output()
+        .context("failed to execute git diff")?;
+    if !output.status.success() {
+        bail!(
+            "git diff against {comparison} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(parse_added_range)
+        .collect())
+}
+
+fn parse_added_range(line: &str) -> Option<(usize, usize)> {
+    let range = line.strip_prefix("@@ ")?.split_whitespace().nth(1)?;
+    let (start, count) = range
+        .strip_prefix('+')?
+        .split_once(',')
+        .map_or((range.strip_prefix('+')?, "1"), |parts| parts);
+    let start: usize = start.parse().ok()?;
+    let count: usize = count.parse().ok()?;
+    (count > 0).then(|| (start, start.saturating_add(count - 1)))
+}
+
+fn exists_at_revision(root: &Path, comparison: &str, path: &Path) -> Result<bool> {
+    let path = path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    Ok(Command::new("git")
+        .args(["cat-file", "-e", &format!("{comparison}:{path}")])
+        .current_dir(root)
+        .output()
+        .context("failed to inspect comparison revision")?
+        .status
+        .success())
 }
 
 pub fn worktree_fingerprint(root: &Path) -> Result<Option<String>> {

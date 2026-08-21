@@ -52,6 +52,8 @@ pub struct Finding {
     pub blocking: bool,
     pub path: PathBuf,
     pub line: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<usize>,
     pub evidence: String,
     pub recommendation: String,
 }

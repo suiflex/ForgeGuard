@@ -1,8 +1,8 @@
 # Focus, auto-poke, and hill-climbability
 
-ForgeGuard installs focus enforcement with `forgeguard init`. No extra configuration is required for new repositories. Auto-poke is enabled by default and remains bounded.
+When a global ForgeGuard hook is installed, General Guard provides objective, TODO, evidence, scope, and bounded auto-poke supervision in any working directory. It supports non-code work without project initialization.
 
-Enforcement is opt-in: every hook passes silently until `.forgeguard/config.toml` exists in the repository or workspace root, so a repository you never initialized is never gated, never blocked, and never written to.
+`forgeguard init` separately activates Code Guard through `.forgeguard/config.toml`. Code Guard preserves `inspect → design → implement → test → review → verify` and adds source scanning, configured commands, and local reports. General Guard never executes repository commands or writes project configuration/reports.
 
 ## Lifecycle hooks
 
@@ -10,7 +10,7 @@ ForgeGuard uses three hooks where the host supports them:
 
 - `SessionStart` restores the session objective and active continuation after startup, resume, or compaction.
 - `PreToolUse` warns when an explicit edit path falls outside declared scope.
-- `Stop` checks task state, repository gates, evidence, and continuation limits.
+- `Stop` always checks registered task state, evidence, and continuation limits; Code Guard additionally runs repository gates.
 
 Auto-poke itself is implemented by the `Stop` hook. A block response makes the host submit a new model request with the next instruction. Headless operation uses the same path when the host executes lifecycle hooks in headless mode.
 
@@ -18,7 +18,7 @@ OpenCode receives the shared policy and skill, but ForgeGuard does not claim aut
 
 ## Session state
 
-Each host conversation gets a separate task file under `.forgeguard/cache/tasks/`. State contains:
+Each registered host conversation gets a separate task file under `.forgeguard/cache/tasks/`, even without project initialization. State contains:
 
 - exact objective and repository-relative scope prefixes;
 - metric, baseline, target, guardrails, and verification contract;
@@ -36,8 +36,8 @@ model ends turn
   → abstract goal: request measurable contract
   → incomplete todos: continue next todo
   → todos complete: require evidence and confidence
-  → gate failure: continue from exact failure
-  → gate pass: TODO/test/review/contract/final verification poke
+  → Code Guard only: gate failure continues from exact failure
+  → General or Code Guard: mode-appropriate evidence/review/final verification poke
   → limits reached: stop with blocker
   → requirements satisfied: allow completion
 ```
@@ -98,7 +98,7 @@ Confidence is model-reported and advisory. It never replaces tool output, tests,
 
 ## Configuration
 
-Fresh initialization writes:
+Code Guard initialization writes:
 
 ```toml
 [focus]

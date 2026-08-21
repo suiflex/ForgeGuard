@@ -1,8 +1,9 @@
 use std::{
-    collections::hash_map::DefaultHasher,
+    collections::{hash_map::DefaultHasher, HashMap},
     fs,
     hash::Hasher,
     path::{Component, Path, PathBuf},
+    process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -16,7 +17,9 @@ use crate::{
     git::{changed_paths_partitioned, repository_roots, worktree_fingerprint},
     model::GateSummary,
     report::{render_gate_compact, COMPACT_MAX_CHARS},
-    run_gate, GateOptions, GateStatus,
+    run_changed_gate,
+    scanner::{executable_placeholders, ExecutablePlaceholder},
+    GateStatus,
 };
 
 const CACHE_DIR: &str = ".forgeguard/cache/stop";
@@ -43,11 +46,18 @@ const MAX_TASK_ITEM_CHARS: usize = 500;
 const MAX_CONFIDENCE_HISTORY: usize = 16;
 const FOCUS_FEEDBACK_RESERVE: usize = 320;
 const MAX_AUTO_POKES: u32 = 5;
-const AUTO_POKE_PHASES: [&str; 5] = [
+const CODE_AUTO_POKE_PHASES: [&str; 5] = [
     "reinspect the objective and remaining TODOs; fix any concrete gap",
     "run relevant tests and checks; fix every observed failure",
     "review the full diff for correctness, regressions, and scope drift",
     "verify contracts, edge cases, and failure handling against repository evidence",
+    "run final verification and confirm no objective gap remains",
+];
+const GENERAL_AUTO_POKE_PHASES: [&str; 5] = [
+    "reinspect the objective and remaining TODOs; fix any concrete gap",
+    "verify the deliverable and every result against executed evidence",
+    "review the deliverable for correctness, completeness, and scope drift",
+    "verify claims, numbers, edge cases, and failure handling against evidence",
     "run final verification and confirm no objective gap remains",
 ];
 const CLARIFICATION_CONTEXT: &str = "Before acting, resolve missing facts with read-only inspection. If unresolved ambiguity materially changes behavior, data, security, scope, cost, or external or irreversible state, {question_instruction} and wait for the answer. Otherwise use the safest reversible default and state it briefly.";
@@ -151,14 +161,14 @@ pub fn evaluate_stop_hook(fallback_root: &Path, input: &str) -> Result<(HookDeci
     let Some(root) = find_project_root(fallback_root, &payload) else {
         return Ok((HookDecision::Pass, false));
     };
+    let session = session_key(&payload);
     if !is_hook_project(&root)? {
-        return Ok((HookDecision::Pass, false));
+        return evaluate_general_stop_hook(&root, &session);
     }
     let repositories = repository_roots(&root)?;
     if repositories.is_empty() {
         return Ok((HookDecision::Pass, false));
     }
-    let session = session_key(&payload);
     let worktree = workspace_fingerprint(&root, &repositories)?;
     let worktree_key = worktree.as_deref().unwrap_or("clean").to_owned();
     if let Some(decision) = replayed_decision(
@@ -178,6 +188,39 @@ pub fn evaluate_stop_hook(fallback_root: &Path, input: &str) -> Result<(HookDeci
         &evaluated.0,
     )?;
     Ok(evaluated)
+}
+
+fn evaluate_general_stop_hook(root: &Path, session: &str) -> Result<(HookDecision, bool)> {
+    let state = stop_state_key(root, session, "general")?;
+    if let Some(decision) = replayed_decision(root, session, &state) {
+        return Ok((decision, true));
+    }
+    let Some(mut task) = read_task(root, session)? else {
+        return Ok((HookDecision::Pass, false));
+    };
+    let focus = FocusConfig::default();
+    let decision = match task.status {
+        TaskStatus::Active => active_auto_poke(root, &mut task, &focus, "work")?
+            .unwrap_or_else(|| HookDecision::Block(incomplete_task_message(session))),
+        TaskStatus::Ready => {
+            match ready_auto_poke(root, &mut task, &focus, &GENERAL_AUTO_POKE_PHASES, "work")? {
+                Some(decision) => decision,
+                None => {
+                    task.status = TaskStatus::Completed;
+                    write_task(root, &task)?;
+                    HookDecision::Pass
+                }
+            }
+        }
+        TaskStatus::Completed | TaskStatus::Blocked => HookDecision::Pass,
+    };
+    record_replay(
+        root,
+        session,
+        &stop_state_key(root, session, "general")?,
+        &decision,
+    )?;
+    Ok((decision, false))
 }
 
 fn evaluate_stop_state(
@@ -200,7 +243,13 @@ fn evaluate_stop_state(
                 };
                 let task = task.as_mut().expect("matched ready task");
                 if config.focus.enabled {
-                    if let Some(decision) = ready_auto_poke(&root, task, &config.focus)? {
+                    if let Some(decision) = ready_auto_poke(
+                        &root,
+                        task,
+                        &config.focus,
+                        &CODE_AUTO_POKE_PHASES,
+                        "repository",
+                    )? {
                         return Ok((decision, false));
                     }
                 }
@@ -220,7 +269,7 @@ fn evaluate_stop_state(
             .as_mut()
             .filter(|task| task.status == TaskStatus::Active)
         {
-            if let Some(decision) = active_auto_poke(&root, task, &config.focus)? {
+            if let Some(decision) = active_auto_poke(&root, task, &config.focus, "repository")? {
                 return Ok((decision, false));
             }
         }
@@ -232,6 +281,19 @@ fn evaluate_stop_state(
         task_signature(task.as_ref())
     );
     let cache = read_cache(&root, &session);
+    if config.mode != GuardMode::Lite {
+        if let Some(message) = added_executable_placeholder(&root, repositories)? {
+            return bounded_block(
+                &root,
+                &session,
+                fingerprint,
+                message,
+                cache.as_ref(),
+                &config.focus,
+                false,
+            );
+        }
+    }
     if let Some(cache) = &cache {
         if cache.fingerprint == fingerprint && cache.status == GateStatus::Blocked {
             return bounded_block(
@@ -303,7 +365,13 @@ fn evaluate_stop_state(
             .as_mut()
             .filter(|task| task.status == TaskStatus::Ready)
         {
-            if let Some(decision) = ready_auto_poke(&root, task, &config.focus)? {
+            if let Some(decision) = ready_auto_poke(
+                &root,
+                task,
+                &config.focus,
+                &CODE_AUTO_POKE_PHASES,
+                "repository",
+            )? {
                 return Ok((decision, false));
             }
         }
@@ -324,6 +392,83 @@ fn evaluate_stop_state(
         },
     )?;
     Ok((HookDecision::Pass, false))
+}
+
+fn added_executable_placeholder(
+    workspace: &Path,
+    repositories: &[PathBuf],
+) -> Result<Option<String>> {
+    for repository in repositories {
+        let Some((path, placeholder)) = added_placeholder_in_repository(repository)? else {
+            continue;
+        };
+        let prefix = repository.strip_prefix(workspace).unwrap_or(Path::new(""));
+        return Ok(Some(format!(
+            "ForgeGuard anti-slop hook blocked completion.\n- {}:{} added executable placeholder `{}`: {}\nReplace it with a complete implementation; committed placeholders and test code are ignored.",
+            prefix.join(path).display(),
+            placeholder.line,
+            placeholder.kind,
+            placeholder.evidence
+        )));
+    }
+    Ok(None)
+}
+
+fn added_placeholder_in_repository(
+    repository: &Path,
+) -> Result<Option<(PathBuf, ExecutablePlaceholder)>> {
+    let (_, existing) = changed_paths_partitioned(repository)?;
+    for path in existing {
+        if let Some(placeholder) = added_placeholder_in_file(repository, &path)? {
+            return Ok(Some((path, placeholder)));
+        }
+    }
+    Ok(None)
+}
+
+fn added_placeholder_in_file(
+    repository: &Path,
+    path: &Path,
+) -> Result<Option<ExecutablePlaceholder>> {
+    let Ok(source) = fs::read_to_string(repository.join(path)) else {
+        return Ok(None);
+    };
+    let current = executable_placeholders(path, &source)?;
+    let previous = source_at_head(repository, path)?;
+    let mut previous_counts = HashMap::new();
+    for placeholder in executable_placeholders(path, &previous)? {
+        *previous_counts
+            .entry((placeholder.kind, placeholder.fingerprint))
+            .or_insert(0usize) += 1;
+    }
+    for placeholder in current {
+        let count = previous_counts
+            .entry((placeholder.kind, placeholder.fingerprint.clone()))
+            .or_default();
+        if *count == 0 {
+            return Ok(Some(placeholder));
+        }
+        *count -= 1;
+    }
+    Ok(None)
+}
+
+fn source_at_head(root: &Path, path: &Path) -> Result<String> {
+    let path = path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    let output = Command::new("git")
+        .args(["show", "--no-textconv", &format!("HEAD:{path}")])
+        .current_dir(root)
+        .output()
+        .context("failed to inspect committed source")?;
+    Ok(if output.status.success() {
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    } else {
+        String::new()
+    })
 }
 
 pub fn render_hook_decision(agent: HookAgent, decision: &HookDecision) -> String {
@@ -542,9 +687,7 @@ pub fn evaluate_context_hook(
     let Some(root) = find_project_root(fallback_root, &payload) else {
         return Ok(None);
     };
-    if !is_hook_project(&root)? {
-        return Ok(None);
-    }
+    let code_guard = is_hook_project(&root)?;
     let session = session_key(&payload);
     let task = read_task(&root, &session)?;
     if agent == HookAgent::Antigravity
@@ -557,11 +700,23 @@ pub fn evaluate_context_hook(
         return Ok(None);
     }
     let mut context = match task {
-        Some(task) => task_context(&task),
-        None => format!(
+        Some(task) => task_context(&task, code_guard),
+        None if code_guard => format!(
             "ForgeGuard focus session {session}. For non-trivial code changes, register the objective and verifiable todos before editing: `forgeguard task start --session {session} --objective <goal> --todo <step> [--metric <metric> --baseline <value> --target <value> --verification <check>]`. Never state a correction, number, or completion claim without exact tool/check evidence; label it unverified otherwise."
         ),
+        None => format!(
+            "ForgeGuard general focus session {session}. For non-trivial work, register the objective and verifiable todos: `forgeguard task start --session {session} --objective <goal> --todo <step> [--metric <metric> --baseline <value> --target <value> --verification <check>]`. Never state a correction, number, or completion claim without exact tool/check evidence; label it unverified otherwise."
+        ),
     };
+    if code_guard {
+        context.push_str(
+            " Code Guard is active: follow inspect → design → implement → test → review → verify; repository scanning and configured commands run at completion.",
+        );
+    } else {
+        context.push_str(
+            " General Guard is active: objective, TODO, evidence, scope, and auto-poke apply; repository scanning and commands are disabled until `forgeguard init` creates `.forgeguard/config.toml`.",
+        );
+    }
     let question_instruction = match agent {
         HookAgent::Claude => "call `AskUserQuestion`",
         HookAgent::Codex => "use `request_user_input` when available, otherwise ask directly",
@@ -606,9 +761,6 @@ pub fn evaluate_scope_hook(fallback_root: &Path, input: &str) -> Result<Option<S
         return Ok(None);
     };
     if task.status != TaskStatus::Active || task.scopes.is_empty() {
-        return Ok(None);
-    }
-    if !is_hook_project(&root)? {
         return Ok(None);
     }
     let tool_input = payload
@@ -694,23 +846,30 @@ fn find_project_root(fallback_root: &Path, payload: &Value) -> Option<PathBuf> {
     }
     candidates.push(fallback_root.to_path_buf());
 
-    candidates.into_iter().find_map(|candidate| {
-        let start = if candidate.is_file() {
-            candidate.parent()?
-        } else {
-            candidate.as_path()
-        };
-        start
-            .ancestors()
-            .find(|path| path.join(".git").exists() || path.join(CONFIG_FILE).is_file())
-            .map(Path::to_path_buf)
-    })
+    let starts = candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            let start = if candidate.is_file() {
+                candidate.parent()?
+            } else {
+                candidate.as_path()
+            };
+            start.is_dir().then(|| start.to_path_buf())
+        })
+        .collect::<Vec<_>>();
+    starts
+        .iter()
+        .find_map(|start| {
+            start
+                .ancestors()
+                .find(|path| path.join(".git").exists() || path.join(CONFIG_FILE).is_file())
+                .map(Path::to_path_buf)
+        })
+        .or_else(|| starts.into_iter().next())
 }
 
-/// Hooks are opt-in: only a repository or workspace initialized with
-/// `forgeguard init` is guarded. Detecting a language is not consent, and
-/// silently gating a repository the user never initialized turns unrelated
-/// work (documentation, research, MCP) into blocked agent turns.
+/// Project scanning and commands are opt-in. General task supervision remains
+/// available without initialization but never executes repository policy.
 fn is_hook_project(root: &Path) -> Result<bool> {
     Ok(root.join(CONFIG_FILE).is_file())
 }
@@ -745,14 +904,12 @@ fn run_workspace_gate(
     workspace_config: &ForgeGuardConfig,
 ) -> Result<crate::GateReport> {
     if repositories == [workspace] {
-        let (changed, existing) = changed_paths_partitioned(workspace)?;
-        return run_gate(
+        let (changed, _) = changed_paths_partitioned(workspace)?;
+        return run_changed_gate(
             workspace,
             workspace_config,
-            &GateOptions {
-                skip_commands: !changes_require_commands(&changed),
-                paths: Some(existing),
-            },
+            !changes_require_commands(&changed),
+            None,
         );
     }
 
@@ -785,14 +942,12 @@ fn run_workspace_gate(
             config.policies = workspace_config.policies.clone();
             config.rules = workspace_config.rules.clone();
         }
-        let (changed, existing) = changed_paths_partitioned(repository)?;
-        let report = run_gate(
+        let (changed, _) = changed_paths_partitioned(repository)?;
+        let report = run_changed_gate(
             repository,
             &config,
-            &GateOptions {
-                skip_commands: !changes_require_commands(&changed),
-                paths: Some(existing),
-            },
+            !changes_require_commands(&changed),
+            None,
         )?;
         write_json(&repository.join(REPORT_FILE), &report)?;
         merge_report(
@@ -945,6 +1100,7 @@ fn active_auto_poke(
     root: &Path,
     task: &mut TaskState,
     focus: &FocusConfig,
+    evidence_context: &str,
 ) -> Result<Option<HookDecision>> {
     if !focus.auto_poke {
         return Ok(None);
@@ -983,13 +1139,15 @@ fn active_auto_poke(
             )
         }
     };
-    continue_auto_poke(root, task, focus, &instruction, true)
+    continue_auto_poke(root, task, focus, &instruction, true, evidence_context)
 }
 
 fn ready_auto_poke(
     root: &Path,
     task: &mut TaskState,
     focus: &FocusConfig,
+    phases: &[&str; 5],
+    evidence_context: &str,
 ) -> Result<Option<HookDecision>> {
     if !focus.auto_poke {
         return Ok(None);
@@ -1005,6 +1163,7 @@ fn ready_auto_poke(
                 "goal hill-climbability contract is {hill_climbability}/100, below {min_hill_climbability}; reframe the goal contract before completion"
             ),
             true,
+            evidence_context,
         );
     }
     let min_confidence = focus.min_confidence.min(100);
@@ -1020,14 +1179,15 @@ fn ready_auto_poke(
                 "model confidence is {confidence}/100, below {min_confidence}; inspect concrete uncertainty and submit fresh evidence plus confidence"
             ),
             true,
+            evidence_context,
         );
     }
     let limit = focus.max_auto_pokes.min(MAX_AUTO_POKES);
     if task.auto_pokes >= limit {
         return Ok(None);
     }
-    let phase = AUTO_POKE_PHASES[task.auto_pokes as usize];
-    continue_auto_poke(root, task, focus, phase, false)
+    let phase = phases[task.auto_pokes as usize];
+    continue_auto_poke(root, task, focus, phase, false, evidence_context)
 }
 
 fn continue_auto_poke(
@@ -1036,6 +1196,7 @@ fn continue_auto_poke(
     focus: &FocusConfig,
     instruction: &str,
     stop_when_exhausted: bool,
+    evidence_context: &str,
 ) -> Result<Option<HookDecision>> {
     let limit = focus.max_auto_pokes.min(MAX_AUTO_POKES);
     if task.auto_pokes >= limit {
@@ -1059,7 +1220,7 @@ fn continue_auto_poke(
     task.blocker = None;
     write_task(root, task)?;
     Ok(Some(HookDecision::Block(format!(
-        "ForgeGuard auto-poke {current}/{limit}: {instruction}. Continue from exact repository/tool evidence.",
+        "ForgeGuard auto-poke {current}/{limit}: {instruction}. Continue from exact {evidence_context}/tool evidence.",
         current = task.auto_pokes,
     ))))
 }
@@ -1076,9 +1237,13 @@ fn incomplete_task_message(session: &str) -> String {
     )
 }
 
-fn task_context(task: &TaskState) -> String {
+fn task_context(task: &TaskState, code_guard: bool) -> String {
     let scopes = if task.scopes.is_empty() {
-        "repository scope not constrained".to_owned()
+        if code_guard {
+            "repository scope not constrained".to_owned()
+        } else {
+            "work scope not constrained".to_owned()
+        }
     } else {
         format!("scope prefixes: {}", task.scopes.join(", "))
     };

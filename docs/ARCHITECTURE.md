@@ -34,7 +34,7 @@ Full reports stay local under `.forgeguard/reports/`; per-session task and hook 
 
 ## Scanner design
 
-Tree-sitter provides syntax, call nodes, loop scope, source locations, structural complexity, and code/comment separation across the parser matrix. JavaScript/TypeScript, Python, Rust, and Go add bounded import/binding provenance, parameter-taint propagation through assignments, recognized sanitizer stops, and fixed-point sink summaries for uniquely named local wrappers. Dynamic imports, reflection, macros, overload/type resolution, custom sanitizer proofs, path sensitivity, and runtime dispatch remain unresolved. Files with syntax errors receive `FG-PARSE-001` and no structural claims.
+Tree-sitter provides syntax, call nodes, loop scope, source locations, structural complexity, and code/comment separation across the parser matrix. JavaScript/TypeScript, Python, Rust, and Go add bounded import/binding provenance, request-source and parameter taint through assignments and collection mutations, sink-specific sanitizer stops, and fixed-point source/sink/auth summaries for uniquely resolved local wrappers. Projects may add trusted source and sanitizer names in configuration. Dynamic imports, reflection, macros, overload/type resolution, sanitizer correctness proofs, path sensitivity, and runtime dispatch remain unresolved. Files with syntax errors receive `FG-PARSE-001` and no structural claims.
 
 Parser-backed function scopes also receive alpha-renamed Type-2 clone evidence and conservative same-operation fingerprints; unsupported languages retain exact duplicate-block checks. Standalone SQL files receive the `SELECT *` check. ForgeGuard deliberately reports evidence rather than pretending to prove business equivalence, whole-program data flow, complexity, or runtime cost.
 
@@ -48,6 +48,8 @@ Source walking honors Git ignore files and excludes generated or dependency dire
 - Lite mode reports static findings without blocking.
 - Per-rule `enabled`, `severity`, and `block` overrides apply before gate status.
 - Each configured command has a timeout; timeout is a failed check.
+- Enabled dependency-audit, license-inventory/policy, and SBOM checks run on changed gates only when a dependency manifest or lockfile changed. Eligible successful results reuse a 24-hour content-fingerprint cache; failures always rerun, and persisted SBOM artifacts invalidate their cache entry when removed.
+- Configured-check failures appear in human, JSON, and SARIF reports; successful SBOM JSON is persisted under `.forgeguard/reports/sbom/`, and complete supply-tool output under `.forgeguard/reports/supply-chain/`.
 - Duplicate rule/path/line findings collapse before rendering.
 
 ## Hook policy
@@ -70,4 +72,4 @@ Source walking honors Git ignore files and excludes generated or dependency dire
 
 ## Extension direction
 
-Rule metadata has one registry and every finding carries confidence plus effective blocking state. SARIF 2.1.0 maps the same report model to code-scanning results. Future work includes compiler-backed type/data-flow packs, MCP schema verification, query-plan capture, SBOM, artifact signing, and provenance attestations.
+Rule metadata has one registry and every finding carries confidence plus effective blocking state. SARIF 2.1.0 maps static findings and configured-check failures to code-scanning results. Future work includes compiler-backed type/data-flow packs, MCP schema verification, query-plan capture, artifact signing, and provenance attestations.

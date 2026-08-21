@@ -85,6 +85,8 @@ pub struct CheckResult {
     pub exit_code: Option<i32>,
     pub duration_ms: u128,
     pub output: String,
+    #[serde(default)]
+    pub cached: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -994,10 +994,28 @@ function renderSafe(input) {
   const markup = escapeHtml(input);
   element.innerHTML = markup;
 }
+function renderWithWrongSanitizer(input) {
+  const markup = shellescape(input);
+  element.innerHTML = markup;
+}
+function readRequestPath() {
+  const requested = req.query.path;
+  return fs.readFile(requested);
+}
+function executeCollected(input) {
+  const commands = [];
+  commands.push(input);
+  child_process.exec(commands[0]);
+}
+function authorizedCreate(req) {
+  policy.check(req.user);
+  return createUser(req.body);
+}
 function hash(value) { return createHash("sha1").update(value); }
 app.post("/users", createUser);
 app.post("/authors", createAuthor);
 app.post("/safe", requireAuth, createUser);
+app.post("/authorized", authorizedCreate);
 try { work(); } catch (error) {}
 "#,
     )
@@ -1033,8 +1051,8 @@ try { work(); } catch (error) {}
             .iter()
             .filter(|finding| finding.rule_id == "FG-SEC-006")
             .count(),
-        1,
-        "sanitized assignment must not be reported"
+        2,
+        "HTML sanitizer must stop HTML taint, but a shell sanitizer must not"
     );
     assert_eq!(
         findings
@@ -1043,6 +1061,38 @@ try { work(); } catch (error) {}
             .count(),
         2,
         "author is not auth, while requireAuth is an explicit access-control signal"
+    );
+}
+
+#[test]
+fn supports_project_taint_sources_and_explicitly_trusted_sanitizers() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("custom.ts"),
+        r#"function unsafeRun() {
+  const command = externalValue();
+  child_process.exec(command);
+}
+function safeRun() {
+  const command = approved(externalValue());
+  child_process.exec(command);
+}
+"#,
+    )
+    .expect("write source");
+    let mut config = ScanConfig::default();
+    config.taint_sources.push("externalValue".to_owned());
+    config.trusted_sanitizers.push("approved".to_owned());
+
+    let findings = scan_project(directory.path(), &config, &ScanOptions::default())
+        .expect("scan configured taint");
+
+    assert_eq!(
+        findings
+            .iter()
+            .filter(|finding| finding.rule_id == "FG-SEC-003")
+            .count(),
+        1
     );
 }
 
@@ -1068,6 +1118,60 @@ fn follows_assignment_into_a_sensitive_wrapper_defined_in_another_file() {
     .expect("scan project");
 
     assert!(findings.iter().any(|finding| {
+        finding.rule_id == "FG-SEC-003"
+            && finding.path.as_path() == std::path::Path::new("service.ts")
+    }));
+}
+
+#[test]
+fn propagates_a_request_source_returned_by_a_unique_cross_file_wrapper() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("request.ts"),
+        "export function requestedCommand() { return req.query.command; }\n",
+    )
+    .expect("write source wrapper");
+    fs::write(
+        directory.path().join("service.ts"),
+        "import { requestedCommand } from './request';\nfunction execute() { const command = requestedCommand(); child_process.exec(command); }\n",
+    )
+    .expect("write caller");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    assert!(findings.iter().any(|finding| {
+        finding.rule_id == "FG-SEC-003"
+            && finding.path.as_path() == std::path::Path::new("service.ts")
+    }));
+}
+
+#[test]
+fn does_not_apply_a_taint_source_summary_to_an_unrelated_same_named_function() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("request.ts"),
+        "export function requestedCommand() { return req.query.command; }\n",
+    )
+    .expect("write source wrapper");
+    fs::write(
+        directory.path().join("service.ts"),
+        "function requestedCommand() { return 'fixed'; }\nfunction execute() { child_process.exec(requestedCommand()); }\n",
+    )
+    .expect("write unrelated local function");
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan project");
+
+    assert!(!findings.iter().any(|finding| {
         finding.rule_id == "FG-SEC-003"
             && finding.path.as_path() == std::path::Path::new("service.ts")
     }));

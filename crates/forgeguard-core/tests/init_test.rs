@@ -135,6 +135,55 @@ fn installs_configuration_for_all_supported_agents() {
 }
 
 #[test]
+fn reinitialization_adds_new_presets_without_overwriting_existing_commands() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("Cargo.toml"),
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write manifest");
+    let mut config = ForgeGuardConfig::new(
+        "sample",
+        vec![forgeguard_core::CommandConfig {
+            name: "test".to_owned(),
+            command: "custom-test".to_owned(),
+            required: true,
+            enabled: true,
+            timeout_seconds: 30,
+        }],
+    );
+    config.version = 1;
+    config.save(directory.path()).expect("save legacy config");
+
+    let report = initialize_project(
+        directory.path(),
+        &InitOptions {
+            agents: vec![AgentTarget::Codex],
+            ..InitOptions::default()
+        },
+    )
+    .expect("reinitialize project");
+    let upgraded = ForgeGuardConfig::load(directory.path()).expect("load reconciled config");
+
+    assert_eq!(upgraded.version, 1, "init must not change gate semantics");
+    assert_eq!(
+        upgraded
+            .commands
+            .iter()
+            .find(|command| command.name == "test")
+            .map(|command| command.command.as_str()),
+        Some("custom-test")
+    );
+    assert!(upgraded
+        .commands
+        .iter()
+        .any(|command| command.name == "dependency-audit" && !command.enabled));
+    assert!(report
+        .files_written
+        .contains(&".forgeguard/config.toml".to_owned()));
+}
+
+#[test]
 fn project_init_appends_installed_agent_directories_to_existing_gitignore() {
     let directory = tempdir().expect("temp directory");
     fs::write(directory.path().join(".gitignore"), "target/\n/.codex/\n").expect("write gitignore");

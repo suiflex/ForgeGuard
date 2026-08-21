@@ -50,7 +50,7 @@ Informational security hotspot for non-literal dynamic evaluation or shell execu
 
 ## FG-SEC-003 — Tainted function data reaches a sensitive sink
 
-Informational hotspot when function data reaches a command, query, or network sink through direct use or bounded assignment propagation. Unique local wrapper summaries allow this evidence to cross files; recognized escaping/sanitizing calls stop propagation.
+Informational hotspot when request input, configured source functions, or function parameters reach a command, query, or network sink through direct use, bounded assignments, collection mutations, or a uniquely resolved local wrapper. Sanitizers are sink-specific unless explicitly trusted for all sinks in project configuration.
 
 ## FG-SEC-004 — Weak cryptography or TLS configuration
 
@@ -70,7 +70,7 @@ Informational hotspot when parameter-derived data reaches a filesystem API throu
 
 ## FG-AUTH-001 — Mutating route requires access-control review
 
-Informational hotspot for common mutating route registrations that do not visibly declare auth, policy, permission, role, guard, or middleware checks. Inherited controls may satisfy the requirement.
+Informational hotspot for common mutating route registrations that do not visibly declare auth, policy, permission, role, guard, middleware, or a uniquely resolved local handler that performs one of those checks. Framework-level inherited controls still require review.
 
 ## FG-ERR-001 — Exception is swallowed
 
@@ -90,7 +90,7 @@ Informational same-language function clone with local identifiers alpha-normaliz
 
 ## FG-DRY-003 — Potential duplicated business operation
 
-Informational same-language signal for differently structured functions that invoke the same set of at least three distinct operations. It is deliberately a review hint: only domain invariants can prove business equivalence.
+Informational same-language signal for differently structured functions that share a domain term and invoke the same set of at least three distinct operations. It is deliberately a review hint: only domain invariants can prove business equivalence.
 
 ## FG-PARSE-001 — Structural analysis skipped
 

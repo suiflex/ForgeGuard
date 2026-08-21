@@ -173,6 +173,17 @@ fn reports_different_shapes_with_the_same_business_operations() {
 "#,
     )
     .expect("write second source");
+    fs::write(
+        directory.path().join("customer.rs"),
+        r#"pub fn sync_customer(customer: Customer) {
+    validate(customer);
+    save(customer);
+    notify(customer);
+    audit(customer);
+}
+"#,
+    )
+    .expect("write unrelated domain source");
 
     let findings = scan_project(
         directory.path(),
@@ -184,4 +195,8 @@ fn reports_different_shapes_with_the_same_business_operations() {
     assert!(findings
         .iter()
         .any(|finding| finding.rule_id == "FG-DRY-003"));
+    assert!(!findings.iter().any(|finding| {
+        finding.rule_id == "FG-DRY-003"
+            && finding.path.as_path() == std::path::Path::new("customer.rs")
+    }));
 }

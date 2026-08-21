@@ -174,7 +174,7 @@ fn scan_project_inner(
         .filter(|path| is_supported_source(path))
         .cloned()
         .collect::<Vec<_>>();
-    let semantic = SemanticIndex::build(&code_files);
+    let semantic = SemanticIndex::build(&code_files, config);
 
     for path in &files {
         let metadata =
@@ -186,7 +186,7 @@ fn scan_project_inner(
             continue;
         };
         let mut file_findings = Vec::new();
-        analyzer.scan_file(root, path, &source, &semantic, &mut file_findings);
+        analyzer.scan_file(root, path, &source, &semantic, config, &mut file_findings);
         apply_inline_suppressions(&source, &mut file_findings);
         findings.extend(file_findings);
     }
@@ -572,12 +572,17 @@ impl FileProvenance {
 struct SemanticIndex {
     files: HashMap<std::path::PathBuf, FileProvenance>,
     functions: HashMap<String, SinkSet>,
+    authorized_functions: HashSet<String>,
+    taint_source_functions: HashSet<String>,
 }
 
 struct FunctionDraft {
     name: String,
     sinks: SinkSet,
     calls: Vec<String>,
+    authorized: bool,
+    source: bool,
+    source_calls: Vec<String>,
 }
 
 fn collect_function_drafts(
@@ -587,6 +592,7 @@ fn collect_function_drafts(
     provenance: &FileProvenance,
     drafts: &mut Vec<FunctionDraft>,
     counts: &mut HashMap<String, usize>,
+    config: &ScanConfig,
 ) {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -600,6 +606,9 @@ fn collect_function_drafts(
             let body = node.child_by_field_name("body").unwrap_or(node);
             let mut sinks = SinkSet::default();
             let mut calls = Vec::new();
+            let mut authorized = false;
+            let mut taint_source = false;
+            let mut source_calls = Vec::new();
             let mut body_stack = vec![body];
             // forgeguard: allow FG-ALG-001 -- function bodies are disjoint; nested functions are skipped here
             while let Some(child) = body_stack.pop() {
@@ -610,6 +619,25 @@ fn collect_function_drafts(
                     let method = terminal_name(callee);
                     sinks.insert(provenance.classify(callee, method));
                     calls.push(method.to_owned());
+                    authorized |= contains_access_control(callee);
+                }
+                if matches!(child.kind(), "return_statement" | "return_expression") {
+                    taint_source |= expression_is_taint_source(
+                        node_text(child, source),
+                        config,
+                        &SemanticIndex::default(),
+                        Path::new(""),
+                    );
+                    let mut return_stack = vec![child];
+                    while let Some(return_child) = return_stack.pop() {
+                        if let Some(callee) = call_name(return_child, source) {
+                            source_calls.push(terminal_name(callee).to_owned());
+                        }
+                        return_stack.extend(
+                            (0..return_child.named_child_count())
+                                .filter_map(|index| return_child.named_child(index as u32)),
+                        );
+                    }
                 }
                 body_stack.extend(
                     (0..child.named_child_count())
@@ -617,7 +645,14 @@ fn collect_function_drafts(
                 );
             }
             *counts.entry(name.clone()).or_default() += 1;
-            drafts.push(FunctionDraft { name, sinks, calls });
+            drafts.push(FunctionDraft {
+                name,
+                sinks,
+                calls,
+                authorized,
+                source: taint_source,
+                source_calls,
+            });
         }
         stack.extend(
             (0..node.named_child_count()).filter_map(|index| node.named_child(index as u32)),
@@ -757,7 +792,7 @@ fn network_methods() -> &'static [&'static str] {
 }
 
 impl SemanticIndex {
-    fn build(files: &[std::path::PathBuf]) -> Self {
+    fn build(files: &[std::path::PathBuf], config: &ScanConfig) -> Self {
         let mut index = Self::default();
         let mut drafts = Vec::new();
         let mut counts = HashMap::<String, usize>::new();
@@ -789,6 +824,7 @@ impl SemanticIndex {
                 &provenance,
                 &mut drafts,
                 &mut counts,
+                config,
             );
             provenance
                 .local_symbols
@@ -799,6 +835,12 @@ impl SemanticIndex {
         for draft in &drafts {
             if counts.get(&draft.name) == Some(&1) {
                 index.functions.insert(draft.name.clone(), draft.sinks);
+                if draft.authorized {
+                    index.authorized_functions.insert(draft.name.clone());
+                }
+                if draft.source {
+                    index.taint_source_functions.insert(draft.name.clone());
+                }
             }
         }
         for _ in 0..drafts.len().max(1) {
@@ -823,6 +865,20 @@ impl SemanticIndex {
                     .entry(draft.name.clone())
                     .or_default()
                     .insert(inherited);
+                if draft
+                    .calls
+                    .iter()
+                    .any(|call| index.authorized_functions.contains(call))
+                {
+                    changed |= index.authorized_functions.insert(draft.name.clone());
+                }
+                if draft
+                    .source_calls
+                    .iter()
+                    .any(|call| index.taint_source_functions.contains(call))
+                {
+                    changed |= index.taint_source_functions.insert(draft.name.clone());
+                }
             }
             if !changed {
                 break;
@@ -914,6 +970,7 @@ impl Analyzer {
         path: &Path,
         source: &str,
         semantic: &SemanticIndex,
+        config: &ScanConfig,
         findings: &mut Vec<Finding>,
     ) {
         let relative = path.strip_prefix(root).unwrap_or(path).to_path_buf();
@@ -997,7 +1054,15 @@ impl Analyzer {
             }
             if is_xss_assignment(node, source) {
                 if let Some(value) = assignment_value(node) {
-                    if parameter_taint_reaches(node, value, source, profile) {
+                    if taint_reaches(
+                        value,
+                        source,
+                        profile,
+                        TaintSink::Html,
+                        config,
+                        semantic,
+                        path,
+                    ) {
                         findings.push(finding_for_node(
                             "FG-SEC-006",
                             "Tainted data reaches an HTML sink",
@@ -1055,7 +1120,9 @@ impl Analyzer {
                         "Use a safe data format or the library's restricted/safe loader; never deserialize untrusted objects.",
                     ));
                 }
-                if is_mutating_route(callee) && !contains_access_control(node_text(node, source)) {
+                if is_mutating_route(callee)
+                    && !route_has_access_control(node_text(node, source), semantic, path)
+                {
                     findings.push(finding_for_node(
                         "FG-AUTH-001",
                         "Mutating route requires access-control review",
@@ -1165,8 +1232,17 @@ impl Analyzer {
                     ));
                 }
                 if let Some(argument) = first_argument(node) {
-                    let tainted = parameter_taint_reaches(node, argument, source, profile);
-                    if is_xss_call(callee) && tainted {
+                    let html_tainted = is_xss_call(callee)
+                        && taint_reaches(
+                            argument,
+                            source,
+                            profile,
+                            TaintSink::Html,
+                            config,
+                            semantic,
+                            path,
+                        );
+                    if html_tainted {
                         findings.push(finding_for_node(
                             "FG-SEC-006",
                             "Tainted data reaches an HTML sink",
@@ -1177,7 +1253,17 @@ impl Analyzer {
                             "Use a context-aware HTML sanitizer or a text-only rendering API.",
                         ));
                     }
-                    if is_filesystem_call(callee) && tainted {
+                    let path_tainted = is_filesystem_call(callee)
+                        && taint_reaches(
+                            argument,
+                            source,
+                            profile,
+                            TaintSink::Path,
+                            config,
+                            semantic,
+                            path,
+                        );
+                    if path_tainted {
                         findings.push(finding_for_node(
                             "FG-SEC-007",
                             "Tainted path reaches a filesystem sink",
@@ -1195,7 +1281,20 @@ impl Analyzer {
                         || semantic_sinks.contains(SinkSet::DATABASE)
                         || semantic_sinks.contains(SinkSet::NETWORK);
                     if sensitive && !is_literal(argument) {
-                        if tainted && !is_filesystem_call(callee) {
+                        let sink = if is_dynamic_execution(callee) {
+                            TaintSink::Command
+                        } else if is_database_call(callee, method)
+                            || semantic_sinks.contains(SinkSet::DATABASE)
+                        {
+                            TaintSink::Query
+                        } else {
+                            TaintSink::Network
+                        };
+                        if !is_filesystem_call(callee)
+                            && taint_reaches(
+                                argument, source, profile, sink, config, semantic, path,
+                            )
+                        {
                             findings.push(finding_for_node(
                                 "FG-SEC-003",
                                 "Tainted function data reaches a sensitive sink",
@@ -1392,13 +1491,25 @@ fn is_filesystem_call(callee: &str) -> bool {
         || normalized.starts_with("std::fs::")
 }
 
-fn parameter_taint_reaches(
-    call: Node<'_>,
+#[derive(Clone, Copy)]
+enum TaintSink {
+    Html,
+    Path,
+    Command,
+    Query,
+    Network,
+}
+
+fn taint_reaches(
     argument: Node<'_>,
     source: &str,
     profile: LanguageProfile,
+    sink: TaintSink,
+    config: &ScanConfig,
+    semantic: &SemanticIndex,
+    path: &Path,
 ) -> bool {
-    let mut parent = call.parent();
+    let mut parent = argument.parent();
     while let Some(node) = parent {
         if profile.is_function(node.kind()) || is_complexity_scope(node.kind()) {
             let Some(parameters) = node.child_by_field_name("parameters") else {
@@ -1409,30 +1520,33 @@ fn parameter_taint_reaches(
                 .filter(|word| !binding_keywords().contains(&word.as_str()))
                 .collect::<HashSet<_>>();
             let function_start = node.start_byte();
-            let call_start = call.start_byte();
-            let prefix = source.get(function_start..call_start).unwrap_or_default();
+            let argument_start = argument.start_byte();
+            let prefix = source
+                .get(function_start..argument_start)
+                .unwrap_or_default();
             // forgeguard: allow FG-ALG-001 -- assignments are propagated over a bounded function prefix
             for _ in 0..4 {
                 let mut changed = false;
                 // forgeguard: allow FG-ALG-001 -- four-pass cap over one bounded function prefix
                 for statement in prefix.lines() {
-                    let Some((left, right)) = statement
-                        .split_once(":=")
-                        .or_else(|| statement.split_once('='))
-                    else {
-                        continue;
-                    };
-                    // forgeguard: allow FG-ALG-002 -- keyword catalog has nine fixed entries
-                    let Some(binding) = identifiers(left)
-                        .into_iter()
-                        .rev()
-                        .find(|word| !binding_keywords().contains(&word.as_str()))
-                    else {
-                        continue;
-                    };
-                    if is_sanitized_expression(right) {
-                        tainted.remove(&binding);
-                    } else if identifiers(right).iter().any(|word| tainted.contains(word)) {
+                    if let Some((left, right)) = assignment_parts(statement) {
+                        // forgeguard: allow FG-ALG-002 -- keyword catalog is a fixed nine-entry slice
+                        let Some(binding) = identifiers(left)
+                            .into_iter()
+                            .rev()
+                            .find(|word| !binding_keywords().contains(&word.as_str()))
+                        else {
+                            continue;
+                        };
+                        if is_sanitized_expression(right, sink, config) {
+                            tainted.remove(&binding);
+                        } else if expression_is_tainted(right, &tainted, config, semantic, path) {
+                            changed |= tainted.insert(binding);
+                        }
+                    }
+                    if let Some(binding) =
+                        tainted_collection(statement, &tainted, config, semantic, path)
+                    {
                         changed |= tainted.insert(binding);
                     }
                 }
@@ -1441,29 +1555,150 @@ fn parameter_taint_reaches(
                 }
             }
             let argument_identifiers = identifiers(node_text(argument, source));
-            return argument_identifiers
-                .iter()
-                .any(|identifier| tainted.contains(identifier))
-                && !is_sanitized_expression(node_text(argument, source));
+            let argument = node_text(argument, source);
+            return !is_sanitized_expression(argument, sink, config)
+                && (argument_identifiers
+                    .iter()
+                    .any(|identifier| tainted.contains(identifier))
+                    || expression_is_taint_source(argument, config, semantic, path));
         }
         parent = node.parent();
     }
     false
 }
 
-fn is_sanitized_expression(value: &str) -> bool {
-    identifiers(value).iter().any(|identifier| {
-        matches!(
-            identifier.to_ascii_lowercase().as_str(),
-            "sanitize"
-                | "sanitizehtml"
-                | "escape"
-                | "escapehtml"
-                | "encodeuricomponent"
-                | "urlencode"
-                | "quote"
-                | "shellescape"
-        )
+fn assignment_parts(statement: &str) -> Option<(&str, &str)> {
+    if let Some(parts) = statement.split_once(":=") {
+        return Some(parts);
+    }
+    let bytes = statement.as_bytes();
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte != b'=' {
+            continue;
+        }
+        let before = index.checked_sub(1).and_then(|offset| bytes.get(offset));
+        let after = bytes.get(index + 1);
+        if before.is_some_and(|byte| matches!(*byte, b'=' | b'!' | b'<' | b'>'))
+            || after.is_some_and(|byte| matches!(*byte, b'=' | b'>'))
+        {
+            continue;
+        }
+        return Some((&statement[..index], &statement[index + 1..]));
+    }
+    None
+}
+
+fn expression_is_tainted(
+    value: &str,
+    tainted: &HashSet<String>,
+    config: &ScanConfig,
+    semantic: &SemanticIndex,
+    path: &Path,
+) -> bool {
+    expression_is_taint_source(value, config, semantic, path)
+        || identifiers(value)
+            .iter()
+            .any(|identifier| tainted.contains(identifier))
+}
+
+fn expression_is_taint_source(
+    value: &str,
+    config: &ScanConfig,
+    semantic: &SemanticIndex,
+    path: &Path,
+) -> bool {
+    let normalized = value.to_ascii_lowercase().replace(' ', "");
+    [
+        "req.body",
+        "req.query",
+        "req.params",
+        "request.body",
+        "request.args",
+        "request.form",
+        "event.body",
+        "location.search",
+        "document.cookie",
+    ]
+    .iter()
+    .any(|source| normalized.contains(source))
+        || ["readline", "input", "prompt", "getparameter", "formvalue"]
+            .iter()
+            .any(|source| contains_named_call(value, source))
+        || identifiers(value).iter().any(|identifier| {
+            config
+                .taint_sources
+                .iter()
+                .any(|source| identifier.eq_ignore_ascii_case(source))
+                || (semantic.taint_source_functions.contains(identifier)
+                    && semantic
+                        .files
+                        .get(path)
+                        .is_some_and(|file| file.local_symbols.contains(identifier)))
+        })
+}
+
+fn tainted_collection(
+    statement: &str,
+    tainted: &HashSet<String>,
+    config: &ScanConfig,
+    semantic: &SemanticIndex,
+    path: &Path,
+) -> Option<String> {
+    for marker in [".push(", ".append(", ".add(", ".insert("] {
+        let Some((receiver, arguments)) = statement.split_once(marker) else {
+            continue;
+        };
+        if expression_is_tainted(arguments, tainted, config, semantic, path) {
+            return identifiers(receiver).into_iter().next_back();
+        }
+    }
+    None
+}
+
+fn is_sanitized_expression(value: &str, sink: TaintSink, config: &ScanConfig) -> bool {
+    if config
+        .trusted_sanitizers
+        .iter()
+        .any(|sanitizer| contains_named_call(value, sanitizer))
+    {
+        return true;
+    }
+    match sink {
+        TaintSink::Html => [
+            "sanitizehtml",
+            "escapehtml",
+            "dompurify.sanitize",
+            "bleach.clean",
+        ]
+        .iter()
+        .any(|sanitizer| contains_named_call(value, sanitizer)),
+        TaintSink::Path => ["secure_filename", "sanitize_filename", "sanitizefilename"]
+            .iter()
+            .any(|sanitizer| contains_named_call(value, sanitizer)),
+        TaintSink::Command => ["shlex.quote", "shellescape"]
+            .iter()
+            .any(|sanitizer| contains_named_call(value, sanitizer)),
+        TaintSink::Query | TaintSink::Network => false,
+    }
+}
+
+fn contains_named_call(value: &str, name: &str) -> bool {
+    let normalized = value.to_ascii_lowercase().replace(char::is_whitespace, "");
+    let name = name
+        .trim()
+        .trim_end_matches('(')
+        .to_ascii_lowercase()
+        .replace(char::is_whitespace, "");
+    if name.is_empty() {
+        return false;
+    }
+    let needle = format!("{name}(");
+    normalized.match_indices(&needle).any(|(start, _)| {
+        start == 0
+            || !normalized[..start]
+                .chars()
+                .next_back()
+                .is_some_and(|character| character.is_ascii_alphanumeric() || character == '_')
     })
 }
 
@@ -1551,6 +1786,17 @@ fn contains_access_control(source: &str) -> bool {
                 .iter()
                 .any(|marker| identifier.contains(marker))
     })
+}
+
+fn route_has_access_control(source: &str, semantic: &SemanticIndex, path: &Path) -> bool {
+    contains_access_control(source)
+        || identifiers(source).iter().any(|identifier| {
+            semantic.authorized_functions.contains(identifier)
+                && semantic
+                    .files
+                    .get(path)
+                    .is_some_and(|file| file.local_symbols.contains(identifier))
+        })
 }
 
 #[derive(Clone, Copy)]
@@ -1827,6 +2073,7 @@ pub(crate) struct CanonicalFunction {
     pub line: usize,
     pub canonical: String,
     pub behavior: Option<String>,
+    pub domain: Vec<String>,
     pub original: String,
 }
 
@@ -1862,6 +2109,10 @@ pub(crate) fn canonical_functions(
                 line: node.start_position().row + 1,
                 canonical,
                 behavior: behavioral_fingerprint(node, source),
+                domain: node
+                    .child_by_field_name("name")
+                    .map(|name| domain_tokens(node_text(name, source)))
+                    .unwrap_or_default(),
                 original: node_text(node, source)
                     .split_whitespace()
                     .collect::<Vec<_>>()
@@ -1874,6 +2125,41 @@ pub(crate) fn canonical_functions(
         }
     }
     functions
+}
+
+fn domain_tokens(name: &str) -> Vec<String> {
+    let mut words = String::with_capacity(name.len());
+    let mut previous_lowercase = false;
+    for character in name.chars() {
+        if !character.is_ascii_alphanumeric() {
+            words.push(' ');
+            previous_lowercase = false;
+            continue;
+        }
+        if character.is_ascii_uppercase() && previous_lowercase {
+            words.push(' ');
+        }
+        words.push(character.to_ascii_lowercase());
+        previous_lowercase = character.is_ascii_lowercase();
+    }
+    words
+        .split_whitespace()
+        .filter(|word| {
+            word.len() >= 4
+                && !matches!(
+                    *word,
+                    "build"
+                        | "create"
+                        | "delete"
+                        | "export"
+                        | "handle"
+                        | "import"
+                        | "process"
+                        | "update"
+                )
+        })
+        .map(str::to_owned)
+        .collect()
 }
 
 fn behavioral_fingerprint(root: Node<'_>, source: &str) -> Option<String> {

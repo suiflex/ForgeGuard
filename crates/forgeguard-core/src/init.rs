@@ -433,6 +433,11 @@ fn ignore_project_agent_directories(
 fn write_config(root: &Path, config: &ForgeGuardConfig, log: &mut InstallLog) -> Result<()> {
     let path = root.join(".forgeguard/config.toml");
     if path.exists() {
+        let mut existing = ForgeGuardConfig::load(root)?;
+        if existing.reconcile_commands(&config.commands) > 0 {
+            existing.save(root)?;
+            record_path(root, &path, &mut log.written);
+        }
         return Ok(());
     }
     let content =

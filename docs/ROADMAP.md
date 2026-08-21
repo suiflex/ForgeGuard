@@ -31,6 +31,12 @@
 - Published capability matrix, labeled precision/recall gate, Type-2 clone evidence, and SARIF 2.1.0.
 - `cargo-deny`, `cargo-audit`, SHA-pinned actions, and Dependabot.
 
+## 0.9–0.13 — New-code and supply-chain quality
+
+- Changed-function complexity, changed-line coverage, secret detection, access-control hotspots, sink-aware taint flow, weak crypto/TLS, unsafe deserialization, XSS/path sinks, and swallowed-exception evidence.
+- Conservative same-operation duplicate hints with shared-domain evidence.
+- Reconciled ecosystem command presets for existing configs, dependency-change gating, content-fingerprint caching, persisted SBOM JSON, and configured-check SARIF results.
+
 ## Next — Database and AI packs
 
 - Compiler-backed type/data-flow and complexity analysis.

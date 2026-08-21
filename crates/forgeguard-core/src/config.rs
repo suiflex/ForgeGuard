@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -87,6 +87,12 @@ pub struct ScanConfig {
     /// Minimum percentage of coverable changed lines that must be covered.
     #[serde(default)]
     pub min_changed_coverage: Option<u8>,
+    /// Project-specific calls or identifiers that introduce untrusted data.
+    #[serde(default)]
+    pub taint_sources: Vec<String>,
+    /// Project-specific sanitizers trusted for every sink category.
+    #[serde(default)]
+    pub trusted_sanitizers: Vec<String>,
 }
 
 impl Default for ScanConfig {
@@ -99,6 +105,8 @@ impl Default for ScanConfig {
             duplicate_block_lines: default_duplicate_block_lines(),
             coverage_report: None,
             min_changed_coverage: None,
+            taint_sources: Vec::new(),
+            trusted_sanitizers: Vec::new(),
         }
     }
 }
@@ -214,6 +222,26 @@ impl ForgeGuardConfig {
             *severity = override_severity;
         }
         true
+    }
+
+    /// Add newly detected presets without changing, removing, or reordering
+    /// commands the repository already owns.
+    pub fn reconcile_commands(&mut self, detected: &[CommandConfig]) -> usize {
+        let mut names = self
+            .commands
+            .iter()
+            .map(|command| command.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let mut additions = Vec::new();
+        for command in detected {
+            if names.insert(command.name.as_str()) {
+                additions.push(command.clone());
+            }
+        }
+        let added = additions.len();
+        drop(names);
+        self.commands.extend(additions);
+        added
     }
 
     pub fn blocks_finding(&self, rule_id: &str, severity: Severity) -> bool {

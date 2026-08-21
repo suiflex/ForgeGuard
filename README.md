@@ -72,7 +72,7 @@ A blocked gate may cause the host agent to use another turn to fix real failures
 - Session-scoped objective, todo, confidence, hill-climbability, auto-poke, resume, and scope-drift state.
 - One `forgeguard-engineering` skill with conditional clean-code, algorithm, backend, frontend, mobile, database, AI, and testing references.
 - Static rules for nested iteration, repeated linear lookup, sorting in loops, database/network I/O in loops, unbounded fan-out, complexity, hardcoded credentials, bounded taint flow, weak crypto/TLS, unsafe deserialization, XSS/path sinks, swallowed exceptions, access-control hotspots, `SELECT *`, and exact/renamed/same-operation duplicates.
-- Compiler/linter delegation for dead code, unused imports, nullability, resource lifetime, and ecosystem-specific correctness. Optional dependency-audit, license-policy, and SBOM commands are discovered but disabled by default so realtime gates make no network calls.
+- Compiler/linter delegation for dead code, unused imports, nullability, resource lifetime, and ecosystem-specific correctness. Optional dependency-audit, license-inventory/policy, and SBOM commands are discovered but disabled by default so realtime gates make no network calls.
 - Clean-as-you-code review at added/edited-line scope, with optional Git base-ref comparison and changed-line LCOV policy.
 - Automatic formatter, linter, type-check, test, and build command discovery.
 - `default`, `lite`, and `strict` operating modes with project and global persistence.
@@ -240,9 +240,10 @@ forgeguard init --refresh    # replace the drifted files, no prompt
 forgeguard init --force      # replace every ForgeGuard-owned file, drifted or not
 ```
 
-Neither flag touches `.forgeguard/config.toml`, and neither writes through a symlink: a
-repository that points `AGENTS.md` at `CLAUDE.md` keeps both as they are, because replacing
-the link would edit the file at the other end.
+Both flags preserve existing `.forgeguard/config.toml` values and append newly detected command
+presets by name. They never replace existing command definitions. Neither writes through a
+symlink: a repository that points `AGENTS.md` at `CLAUDE.md` keeps both as they are, because
+replacing the link would edit the file at the other end.
 
 ## Quick start
 
@@ -426,6 +427,8 @@ extra_excludes = ["generated/"]
 duplicate_block_lines = 6
 coverage_report = "coverage/lcov.info"
 min_changed_coverage = 80
+taint_sources = ["readExternalInput"]
+trusted_sanitizers = ["validateForAllSinks"]
 
 [policies]
 warnings_block = false
@@ -457,6 +460,19 @@ required = true
 enabled = true
 timeout_seconds = 600
 ```
+
+Detected dependency-audit, license-inventory/policy, and SBOM commands are installed as disabled required
+checks. After reviewing and enabling them, changed gates run them only when a dependency manifest
+or lockfile changes. Eligible successful results are reused for 24 hours only while the complete
+dependency fingerprint is unchanged; failures always rerun. Results, including configured-check
+failures, are included in JSON and SARIF. Generated SBOM JSON is kept
+under `.forgeguard/reports/sbom/`; complete audit and license-tool output stays under
+`.forgeguard/reports/supply-chain/`. Tool-specific commands still require their native CLI to be
+installed.
+
+`taint_sources` extends the request/input source catalog. `trusted_sanitizers` is an explicit
+project trust decision and applies to every sink context; prefer built-in context-specific HTML,
+path, and shell sanitizers where possible.
 
 ### Modes
 
@@ -518,7 +534,7 @@ When run in a terminal without an explicit mode, `forgeguard mode` opens the sam
 | `forgeguard capabilities` | Show workflow, parser, structural-rule, and semantic-pack coverage. |
 | `forgeguard doctor` | Verify configuration, Git, and required local tools. |
 | `forgeguard mode` | Check or change project/global operating mode. |
-| `forgeguard config migrate` | Upgrade config v1 to v2 without resetting commands or focus settings. |
+| `forgeguard config migrate` | Upgrade config v1 to v2 and append newly detected command presets without resetting existing commands or focus settings. |
 | `forgeguard gate` | Run static rules and configured quality commands; `--changed --base <ref>` scopes findings to new code. |
 | `forgeguard review` | Scan added/edited Git lines without running commands; `--base <ref>` compares a branch or pull request. |
 | `forgeguard baseline create` | Record current static findings so gates report only new findings. |

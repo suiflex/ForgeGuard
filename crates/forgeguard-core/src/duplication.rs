@@ -223,15 +223,18 @@ fn scan_behavioral_duplicates(
             let Some(behavior) = function.behavior else {
                 continue;
             };
-            groups
-                .entry(format!("{}:{behavior}", function.profile))
-                .or_default()
-                .push(CloneOccurrence {
-                    path: path.strip_prefix(root).unwrap_or(path).to_path_buf(),
-                    line: function.line,
-                    canonical: function.canonical,
-                    original: function.original,
-                });
+            let occurrence = CloneOccurrence {
+                path: path.strip_prefix(root).unwrap_or(path).to_path_buf(),
+                line: function.line,
+                canonical: function.canonical,
+                original: function.original,
+            };
+            for domain in function.domain {
+                groups
+                    .entry(format!("{}:{domain}:{behavior}", function.profile))
+                    .or_default()
+                    .push(occurrence.clone());
+            }
         }
     }
 

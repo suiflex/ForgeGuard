@@ -485,16 +485,27 @@ fn execute() -> Result<ExitCode> {
         } => {
             let mut config = ForgeGuardConfig::load(&root)?;
             let previous = config.migrate_to_v2()?;
+            let detected = detect_project(&root)?;
+            let commands_added = config.reconcile_commands(&detected.suggested_commands);
             config.save(&root)?;
             if json {
                 println!(
                     "{}",
-                    serde_json::json!({"previous_version": previous, "version": config.version})
+                    serde_json::json!({
+                        "previous_version": previous,
+                        "version": config.version,
+                        "commands_added": commands_added,
+                    })
                 );
             } else if previous == config.version {
-                println!("ForgeGuard config already at version {}.", config.version);
+                println!(
+                    "ForgeGuard config already at version {}; added {commands_added} new command preset(s).",
+                    config.version
+                );
             } else {
-                println!("ForgeGuard config migrated from version {previous} to 2.");
+                println!(
+                    "ForgeGuard config migrated from version {previous} to 2; added {commands_added} new command preset(s)."
+                );
             }
             Ok(ExitCode::SUCCESS)
         }

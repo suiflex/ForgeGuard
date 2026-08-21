@@ -8,7 +8,7 @@ use crate::{
     coverage::changed_coverage_finding,
     git::changed_scope,
     model::{GateReport, GateStatus, GateSummary, Severity},
-    runner::run_checks,
+    runner::{run_checks, run_checks_for_changes},
     scanner::{scan_changed_project, scan_project, ScanOptions},
 };
 
@@ -30,7 +30,7 @@ pub fn run_gate(
             paths: options.paths.clone(),
         },
     )?;
-    finish_gate(root, config, options.skip_commands, findings)
+    finish_gate(root, config, options.skip_commands, findings, None)
 }
 
 pub fn run_changed_gate(
@@ -44,7 +44,7 @@ pub fn run_changed_gate(
     if let Some(finding) = changed_coverage_finding(root, &config.scan, &scope)? {
         findings.push(finding);
     }
-    finish_gate(root, config, skip_commands, findings)
+    finish_gate(root, config, skip_commands, findings, Some(&scope.paths))
 }
 
 fn finish_gate(
@@ -52,6 +52,7 @@ fn finish_gate(
     config: &ForgeGuardConfig,
     skip_commands: bool,
     mut findings: Vec<crate::Finding>,
+    changed_paths: Option<&[PathBuf]>,
 ) -> Result<GateReport> {
     findings.dedup_by(|left, right| {
         left.rule_id == right.rule_id && left.path == right.path && left.line == right.line
@@ -64,7 +65,10 @@ fn finish_gate(
     let checks = if skip_commands {
         Vec::new()
     } else {
-        run_checks(root, &config.commands)
+        match changed_paths {
+            Some(paths) => run_checks_for_changes(root, &config.commands, Some(paths)),
+            None => run_checks(root, &config.commands),
+        }
     };
 
     let errors = findings

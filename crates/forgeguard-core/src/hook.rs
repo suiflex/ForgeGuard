@@ -310,6 +310,17 @@ pub fn evaluate_stop_hook(fallback_root: &Path, input: &str) -> Result<(HookDeci
     Ok(evaluated)
 }
 
+/// Global hooks supervise General Guard work only. An initialized repository
+/// has its own lifecycle hooks and must not receive duplicate context, scope,
+/// or completion decisions from the user-level installation.
+pub fn is_general_hook_invocation(fallback_root: &Path, input: &str) -> Result<bool> {
+    let payload: Value = serde_json::from_str(input).unwrap_or(Value::Null);
+    let Some(root) = find_project_root(fallback_root, &payload) else {
+        return Ok(true);
+    };
+    Ok(!is_hook_project(&root)?)
+}
+
 fn evaluate_general_stop_hook(
     root: &Path,
     session: &str,

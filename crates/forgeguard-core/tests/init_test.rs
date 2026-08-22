@@ -305,6 +305,54 @@ fn installs_global_general_guard_configuration_and_skills() {
 }
 
 #[test]
+fn global_install_replaces_duplicate_legacy_hooks_and_preserves_other_hooks() {
+    let directory = tempdir().expect("temp directory");
+    let codex_hooks = directory.path().join(".codex/hooks.json");
+    fs::create_dir_all(codex_hooks.parent().expect("Codex parent")).expect("create Codex config");
+    fs::write(
+        &codex_hooks,
+        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"if git rev-parse --is-inside-work-tree; then forgeguard hook stop --agent codex; fi"}]},{"hooks":[{"type":"command","command":"forgeguard hook stop --agent codex"}]},{"hooks":[{"type":"command","command":"paseo hooks codex Stop"}]}]}}"#,
+    )
+    .expect("seed Codex hooks");
+    let cursor_hooks = directory.path().join(".cursor/hooks.json");
+    fs::create_dir_all(cursor_hooks.parent().expect("Cursor parent"))
+        .expect("create Cursor config");
+    fs::write(
+        &cursor_hooks,
+        r#"{"version":1,"hooks":{"stop":[{"command":"forgeguard hook stop --agent cursor"},{"command":"forgeguard hook stop --agent cursor --legacy"},{"command":"custom cursor hook"}]}}"#,
+    )
+    .expect("seed Cursor hooks");
+
+    forgeguard_core::initialize_global(
+        directory.path(),
+        &InitOptions {
+            force: false,
+            refresh: false,
+            agents: vec![AgentTarget::Codex, AgentTarget::Cursor],
+        },
+    )
+    .expect("refresh global hooks");
+
+    let codex = fs::read_to_string(codex_hooks).expect("read Codex hooks");
+    assert_eq!(
+        codex.matches("forgeguard hook stop --agent codex").count(),
+        1
+    );
+    assert!(codex.contains("forgeguard hook stop --agent codex --global"));
+    assert!(codex.contains("paseo hooks codex Stop"));
+
+    let cursor = fs::read_to_string(cursor_hooks).expect("read Cursor hooks");
+    assert_eq!(
+        cursor
+            .matches("forgeguard hook stop --agent cursor")
+            .count(),
+        1
+    );
+    assert!(cursor.contains("forgeguard hook stop --agent cursor --global"));
+    assert!(cursor.contains("custom cursor hook"));
+}
+
+#[test]
 fn stop_hook_timeout_covers_the_configured_command_budget() {
     let directory = tempdir().expect("temp directory");
     fs::write(

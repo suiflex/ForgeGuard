@@ -11,7 +11,8 @@ use forgeguard_core::{
     config::{ForgeGuardConfig, UpdatePolicy, CONFIG_FILE},
     create_baseline_with_config, detect_installed_agents, detect_project, evaluate_context_hook,
     evaluate_scope_hook, evaluate_stop_hook, initialize_global, initialize_project,
-    mark_task_ready_with_evidence, render_context_hook, render_hook_decision, render_scope_warning,
+    is_general_hook_invocation, mark_task_ready_with_evidence, render_context_hook,
+    render_hook_decision, render_scope_warning,
     report::{render_detection, render_doctor, render_gate, render_gate_compact, render_sarif},
     run_changed_gate, run_doctor, run_gate, start_task_with_profile, task_state, update_task_todos,
     AgentTarget, GateOptions, GateReport, GateStatus, GoalContract, GuardMode, HookAgent,
@@ -208,16 +209,25 @@ enum HookCommands {
     Stop {
         #[arg(long, value_enum)]
         agent: HookAgentArg,
+        /// Run only for work outside an initialized Code Guard repository.
+        #[arg(long)]
+        global: bool,
     },
     /// Inject the active objective when a session starts, resumes, or compacts.
     Context {
         #[arg(long, value_enum)]
         agent: HookAgentArg,
+        /// Run only for work outside an initialized Code Guard repository.
+        #[arg(long)]
+        global: bool,
     },
     /// Warn when a file edit falls outside the declared task path prefixes.
     Scope {
         #[arg(long, value_enum)]
         agent: HookAgentArg,
+        /// Run only for work outside an initialized Code Guard repository.
+        #[arg(long)]
+        global: bool,
     },
 }
 
@@ -340,6 +350,7 @@ fn main() -> ExitCode {
     }
 }
 
+// forgeguard: allow FG-CPLX-001 -- central CLI dispatcher; this change only routes hook scope
 fn execute() -> Result<ExitCode> {
     let cli = Cli::parse();
     let root = cli
@@ -616,14 +627,14 @@ fn execute() -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Commands::Hook {
-            command: HookCommands::Stop { agent },
-        } => execute_stop_hook(&root, agent.into()),
+            command: HookCommands::Stop { agent, global },
+        } => execute_stop_hook(&root, agent.into(), global),
         Commands::Hook {
-            command: HookCommands::Context { agent },
-        } => execute_context_hook(&root, agent.into()),
+            command: HookCommands::Context { agent, global },
+        } => execute_context_hook(&root, agent.into(), global),
         Commands::Hook {
-            command: HookCommands::Scope { agent },
-        } => execute_scope_hook(&root, agent.into()),
+            command: HookCommands::Scope { agent, global },
+        } => execute_scope_hook(&root, agent.into(), global),
         Commands::Task { command } => execute_task(&root, *command),
         Commands::Update { mode, global, json } => execute_update(&root, mode, global, json),
     }
@@ -767,11 +778,14 @@ fn save_config(target: &Path, global: bool, config: &ForgeGuardConfig) -> Result
     }
 }
 
-fn execute_stop_hook(root: &Path, agent: HookAgent) -> Result<ExitCode> {
+fn execute_stop_hook(root: &Path, agent: HookAgent, global: bool) -> Result<ExitCode> {
     let mut input = String::new();
     io::stdin()
         .read_to_string(&mut input)
         .context("failed to read hook input")?;
+    if global && !is_general_hook_invocation(root, &input)? {
+        return Ok(ExitCode::SUCCESS);
+    }
     let home = home_directory().ok();
     if let Some(home) = &home {
         forgeguard_core::update::spawn_refresh_if_stale(home);
@@ -802,22 +816,28 @@ fn execute_stop_hook(root: &Path, agent: HookAgent) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn execute_context_hook(root: &Path, agent: HookAgent) -> Result<ExitCode> {
+fn execute_context_hook(root: &Path, agent: HookAgent, global: bool) -> Result<ExitCode> {
     let mut input = String::new();
     io::stdin()
         .read_to_string(&mut input)
         .context("failed to read hook input")?;
+    if global && !is_general_hook_invocation(root, &input)? {
+        return Ok(ExitCode::SUCCESS);
+    }
     if let Some(context) = evaluate_context_hook(root, &input, agent)? {
         println!("{}", render_context_hook(agent, &input, &context));
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn execute_scope_hook(root: &Path, agent: HookAgent) -> Result<ExitCode> {
+fn execute_scope_hook(root: &Path, agent: HookAgent, global: bool) -> Result<ExitCode> {
     let mut input = String::new();
     io::stdin()
         .read_to_string(&mut input)
         .context("failed to read hook input")?;
+    if global && !is_general_hook_invocation(root, &input)? {
+        return Ok(ExitCode::SUCCESS);
+    }
     if let Some(warning) = evaluate_scope_hook(root, &input)? {
         println!("{}", render_scope_warning(agent, &warning));
     }
@@ -1561,7 +1581,8 @@ mod tests {
 
     use super::{
         agent_menu_rows, agents_from_names, agents_from_rows, execute_mode, summarize_paths,
-        AgentTarget, BaselineCommands, Cli, Commands, ConfigCommands, ModeArg, OutputArg,
+        AgentTarget, BaselineCommands, Cli, Commands, ConfigCommands, HookCommands, ModeArg,
+        OutputArg,
     };
 
     fn temporary_project(label: &str) -> std::path::PathBuf {
@@ -1616,6 +1637,23 @@ mod tests {
         let error = execute_mode(std::path::Path::new("."), Some(ModeArg::Strict), true, true)
             .expect_err("global Code Guard mode must be rejected");
         assert!(error.to_string().contains("Code Guard repositories"));
+    }
+
+    #[test]
+    fn global_lifecycle_hook_scope_is_parseable() {
+        for action in ["stop", "context", "scope"] {
+            let cli =
+                Cli::try_parse_from(["forgeguard", "hook", action, "--agent", "codex", "--global"])
+                    .expect("global hook command should parse");
+            assert!(matches!(
+                cli.command,
+                Commands::Hook {
+                    command: HookCommands::Stop { global: true, .. }
+                        | HookCommands::Context { global: true, .. }
+                        | HookCommands::Scope { global: true, .. }
+                }
+            ));
+        }
     }
 
     #[test]

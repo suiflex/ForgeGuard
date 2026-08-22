@@ -1,13 +1,27 @@
 use std::{fs, process::Command};
 
 use forgeguard_core::{
-    evaluate_context_hook, evaluate_scope_hook, evaluate_stop_hook, mark_task_ready,
-    mark_task_ready_with_confidence, mark_task_ready_with_evidence, render_hook_decision,
-    start_task, start_task_with_contract, start_task_with_profile, task_state, update_task_todos,
-    CommandConfig, ForgeGuardConfig, GoalContract, GuardMode, HookAgent, HookDecision, TaskProfile,
-    TaskStatus,
+    evaluate_context_hook, evaluate_scope_hook, evaluate_stop_hook, is_general_hook_invocation,
+    mark_task_ready, mark_task_ready_with_confidence, mark_task_ready_with_evidence,
+    render_hook_decision, start_task, start_task_with_contract, start_task_with_profile,
+    task_state, update_task_todos, CommandConfig, ForgeGuardConfig, GoalContract, GuardMode,
+    HookAgent, HookDecision, TaskProfile, TaskStatus,
 };
 use tempfile::tempdir;
+
+#[test]
+fn global_hooks_defer_to_an_initialized_repository() {
+    let directory = tempdir().expect("temp directory");
+    let input = format!(r#"{{"cwd":"{}"}}"#, directory.path().display());
+
+    assert!(is_general_hook_invocation(directory.path(), &input).expect("general invocation"));
+
+    ForgeGuardConfig::new("sample", Vec::new())
+        .save(directory.path())
+        .expect("save project config");
+
+    assert!(!is_general_hook_invocation(directory.path(), &input).expect("code invocation"));
+}
 
 #[test]
 fn blocked_hook_is_compact_cached_and_bounded() {

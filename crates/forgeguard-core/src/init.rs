@@ -46,6 +46,13 @@ pub(crate) const CLAUDE_SCOPE_HOOK_COMMAND: &str = "forgeguard hook scope --agen
 pub(crate) const CURSOR_SCOPE_HOOK_COMMAND: &str = "forgeguard hook scope --agent cursor";
 pub(crate) const ANTIGRAVITY_SCOPE_HOOK_COMMAND: &str = "forgeguard hook scope --agent antigravity";
 
+fn hook_command(command: &str, scope: InstallScope) -> String {
+    match scope {
+        InstallScope::Project => command.to_owned(),
+        InstallScope::Global => format!("{command} --global"),
+    }
+}
+
 const SKILL_ASSETS: &[(&str, &str)] = &[
     (
         "SKILL.md",
@@ -492,12 +499,15 @@ fn install_codex(
         overwrite,
         log,
     )?;
+    let stop = hook_command(CODEX_HOOK_COMMAND, scope);
+    let context = hook_command(CODEX_CONTEXT_HOOK_COMMAND, scope);
+    let scope_hook = hook_command(CODEX_SCOPE_HOOK_COMMAND, scope);
     install_grouped_hook(
         root,
         &root.join(".codex/hooks.json"),
         "Stop",
         None,
-        CODEX_HOOK_COMMAND,
+        &stop,
         log,
     )?;
     install_grouped_hook(
@@ -505,7 +515,7 @@ fn install_codex(
         &root.join(".codex/hooks.json"),
         "SessionStart",
         Some("startup|resume|compact"),
-        CODEX_CONTEXT_HOOK_COMMAND,
+        &context,
         log,
     )?;
     install_grouped_hook(
@@ -513,7 +523,7 @@ fn install_codex(
         &root.join(".codex/hooks.json"),
         "PreToolUse",
         Some("apply_patch|Edit|Write"),
-        CODEX_SCOPE_HOOK_COMMAND,
+        &scope_hook,
         log,
     )
 }
@@ -538,12 +548,15 @@ fn install_claude(
         overwrite,
         log,
     )?;
+    let stop = hook_command(CLAUDE_HOOK_COMMAND, scope);
+    let context = hook_command(CLAUDE_CONTEXT_HOOK_COMMAND, scope);
+    let scope_hook = hook_command(CLAUDE_SCOPE_HOOK_COMMAND, scope);
     install_grouped_hook(
         root,
         &root.join(".claude/settings.json"),
         "Stop",
         None,
-        CLAUDE_HOOK_COMMAND,
+        &stop,
         log,
     )?;
     install_grouped_hook(
@@ -551,7 +564,7 @@ fn install_claude(
         &root.join(".claude/settings.json"),
         "SessionStart",
         Some("startup|resume|compact"),
-        CLAUDE_CONTEXT_HOOK_COMMAND,
+        &context,
         log,
     )?;
     install_grouped_hook(
@@ -559,7 +572,7 @@ fn install_claude(
         &root.join(".claude/settings.json"),
         "UserPromptSubmit",
         None,
-        CLAUDE_CONTEXT_HOOK_COMMAND,
+        &context,
         log,
     )?;
     install_grouped_hook(
@@ -567,7 +580,7 @@ fn install_claude(
         &root.join(".claude/settings.json"),
         "PreToolUse",
         Some("Edit|Write|MultiEdit|NotebookEdit"),
-        CLAUDE_SCOPE_HOOK_COMMAND,
+        &scope_hook,
         log,
     )
 }
@@ -590,21 +603,17 @@ fn install_cursor(
         log,
     )?;
     let path = root.join(".cursor/hooks.json");
-    install_cursor_hook(root, &path, "stop", None, CURSOR_HOOK_COMMAND, log)?;
-    install_cursor_hook(
-        root,
-        &path,
-        "sessionStart",
-        None,
-        CURSOR_CONTEXT_HOOK_COMMAND,
-        log,
-    )?;
+    let stop = hook_command(CURSOR_HOOK_COMMAND, scope);
+    let context = hook_command(CURSOR_CONTEXT_HOOK_COMMAND, scope);
+    let scope_hook = hook_command(CURSOR_SCOPE_HOOK_COMMAND, scope);
+    install_cursor_hook(root, &path, "stop", None, &stop, log)?;
+    install_cursor_hook(root, &path, "sessionStart", None, &context, log)?;
     install_cursor_hook(
         root,
         &path,
         "preToolUse",
         Some("Write|StrReplace|Delete|ApplyPatch"),
-        CURSOR_SCOPE_HOOK_COMMAND,
+        &scope_hook,
         log,
     )
 }
@@ -948,10 +957,18 @@ fn install_grouped_hook(
     log: &mut InstallLog,
 ) -> Result<()> {
     let mut document = read_json_object(path)?;
-    if document
-        .pointer(&format!("/hooks/{event}"))
-        .is_some_and(|hooks| contains_hook_command(hooks, command))
-    {
+    let event_pointer = format!("/hooks/{event}");
+    let existing = document.pointer(&event_pointer);
+    let base_command = command.strip_suffix(" --global").unwrap_or(command);
+    let exact = existing.is_some_and(|hooks| contains_hook_command(hooks, command));
+    let matching = existing.map_or(0, |hooks| hook_command_count(hooks, base_command));
+    if exact && matching == 1 {
+        record_path(root, path, &mut log.skipped);
+        return Ok(());
+    }
+    if command.ends_with(" --global") && matching > 0 {
+        remove_grouped_hook_commands(&mut document, event, base_command);
+    } else if matching > 0 {
         record_path(root, path, &mut log.skipped);
         return Ok(());
     }
@@ -978,7 +995,18 @@ fn install_cursor_hook(
     log: &mut InstallLog,
 ) -> Result<()> {
     let mut document = read_json_object(path)?;
-    if contains_string(&document, command) {
+    let event_pointer = format!("/hooks/{event}");
+    let existing = document.pointer(&event_pointer);
+    let base_command = command.strip_suffix(" --global").unwrap_or(command);
+    let exact = existing.is_some_and(|hooks| contains_string(hooks, command));
+    let matching = existing.map_or(0, |hooks| hook_command_count(hooks, base_command));
+    if exact && matching == 1 {
+        record_path(root, path, &mut log.skipped);
+        return Ok(());
+    }
+    if command.ends_with(" --global") && matching > 0 {
+        remove_cursor_hook_commands(&mut document, event, base_command);
+    } else if matching > 0 {
         record_path(root, path, &mut log.skipped);
         return Ok(());
     }
@@ -1124,6 +1152,52 @@ fn contains_hook_command(value: &Value, expected: &str) -> bool {
             .any(|value| contains_hook_command(value, expected)),
         _ => false,
     }
+}
+
+fn hook_command_count(value: &Value, expected: &str) -> usize {
+    match value {
+        Value::String(value) => usize::from(value.contains(expected)),
+        Value::Array(values) => values
+            .iter()
+            .map(|value| hook_command_count(value, expected))
+            .sum(),
+        Value::Object(values) => values
+            .values()
+            .map(|value| hook_command_count(value, expected))
+            .sum(),
+        _ => 0,
+    }
+}
+
+fn remove_grouped_hook_commands(document: &mut Value, event: &str, command: &str) {
+    let Some(handlers) = document
+        .pointer_mut(&format!("/hooks/{event}"))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for handler in handlers.iter_mut() {
+        let Some(hooks) = handler.get_mut("hooks").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        hooks.retain(|hook| hook_command_count(hook, command) == 0);
+    }
+    handlers.retain(|handler| {
+        handler
+            .get("hooks")
+            .and_then(Value::as_array)
+            .map_or(true, |hooks| !hooks.is_empty())
+    });
+}
+
+fn remove_cursor_hook_commands(document: &mut Value, event: &str, command: &str) {
+    let Some(handlers) = document
+        .pointer_mut(&format!("/hooks/{event}"))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    handlers.retain(|handler| hook_command_count(handler, command) == 0);
 }
 
 fn write_json_document(

@@ -331,6 +331,8 @@ Adding a target adds only its own files: `--agent codex` contributes `AGENTS.md`
 
 Existing policy and skill files are not overwritten unless `--force` is supplied. Hook installation merges one ForgeGuard entry into existing JSON and preserves unrelated settings. Global installation writes ForgeGuard-owned skills, compact policies, and hook entries for selected agents. `--force` also removes obsolete ForgeGuard-owned role-skill directories without touching unrelated skills.
 
+Global lifecycle hooks supervise General Guard only. Inside a repository initialized with Code Guard, they defer to the repository hook so one lifecycle event produces one ForgeGuard decision. Re-running the installer normalizes duplicate ForgeGuard entries left by older global installations while preserving unrelated hooks.
+
 When a project `.gitignore` already exists, `forgeguard init` appends the generated directories for
 the selected agents (`.codex/`, `.claude/`, `.cursor/`, and/or `.agents/`). It preserves existing
 patterns, avoids duplicate entries, and does not create a root `.gitignore`. The `AGENTS.md`-only

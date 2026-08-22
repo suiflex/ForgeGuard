@@ -25,7 +25,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@788abdaa468b02b2d53a3d1d8fcac62dc9858f4a # stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
       - name: Sync Cargo.lock to Cargo.toml
         run: cargo update -p forgeguard
       - run: cargo fmt --all -- --check

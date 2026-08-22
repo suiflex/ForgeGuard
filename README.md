@@ -492,6 +492,10 @@ the legacy `forgeguard mode --global` command shape is still recognized but retu
 migration guidance. Existing `mode` fields in `~/.forgeguard/config.toml` remain readable, and global
 installation or refresh does not rewrite that file; the field no longer controls guard behavior.
 
+`forgeguard init --global` creates `~/.forgeguard/config.toml` once when it is missing. General Guard
+reads only its `[focus]` settings for non-code work, including retry, auto-poke, confidence, and
+hill-climbability limits. Later global installs and refreshes preserve the file exactly.
+
 With a global hook installed, General Guard applies task state, scope checks, evidence, and bounded auto-poke without project initialization or repository commands. `forgeguard init` activates Code Guard: the same focus contract plus `inspect → design → implement → test → review → verify`, changed-source scanning, configured checks, and reports. Each continuation creates a new host request and consumes model tokens, so `max_auto_pokes` defaults to three and has a hard cap of five. Pending todos, confidence below `min_confidence`, or goal-contract completeness below `min_hill_climbability` keep the task active. Hill-climbability is a deterministic 0–100 completeness score: metric, baseline, target, guardrail, and verification contribute 20 points each. ForgeGuard does not guess these fields from prose. `forgeguard task start --semantic` only asks a supported host to use its native goal evaluator.
 
 See [Focus, auto-poke, and hill-climbability](docs/FOCUS.md) for the lifecycle, headless behavior, token bounds, upgrade path, and examples.

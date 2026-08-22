@@ -225,7 +225,7 @@ fn project_init_ignores_only_directories_for_selected_agents() {
 }
 
 #[test]
-fn installs_global_skills_without_project_configuration() {
+fn installs_global_general_guard_configuration_and_skills() {
     let directory = tempdir().expect("temp directory");
 
     let report = forgeguard_core::initialize_global(
@@ -269,7 +269,9 @@ fn installs_global_skills_without_project_configuration() {
     // publishes no user-level hook file, so a global install writes neither.
     assert!(!directory.path().join(".gemini/config").exists());
     assert!(!directory.path().join(".gemini/hooks.json").exists());
-    assert!(!directory.path().join(".forgeguard/config.toml").exists());
+    let config = ForgeGuardConfig::load_global(directory.path()).expect("load global config");
+    assert_eq!(config.project.name, "global");
+    assert_eq!(config.focus, forgeguard_core::FocusConfig::default());
     assert!(!report.files_written.is_empty());
 }
 

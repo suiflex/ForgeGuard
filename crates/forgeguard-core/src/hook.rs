@@ -1,6 +1,6 @@
 use std::{
     collections::{hash_map::DefaultHasher, HashMap},
-    fs,
+    env, fs,
     hash::Hasher,
     path::{Component, Path, PathBuf},
     process::Command,
@@ -163,7 +163,7 @@ pub fn evaluate_stop_hook(fallback_root: &Path, input: &str) -> Result<(HookDeci
     };
     let session = session_key(&payload);
     if !is_hook_project(&root)? {
-        return evaluate_general_stop_hook(&root, &session);
+        return evaluate_general_stop_hook(&root, &session, &global_focus_config());
     }
     let repositories = repository_roots(&root)?;
     if repositories.is_empty() {
@@ -190,7 +190,11 @@ pub fn evaluate_stop_hook(fallback_root: &Path, input: &str) -> Result<(HookDeci
     Ok(evaluated)
 }
 
-fn evaluate_general_stop_hook(root: &Path, session: &str) -> Result<(HookDecision, bool)> {
+fn evaluate_general_stop_hook(
+    root: &Path,
+    session: &str,
+    focus: &FocusConfig,
+) -> Result<(HookDecision, bool)> {
     let state = stop_state_key(root, session, "general")?;
     if let Some(decision) = replayed_decision(root, session, &state) {
         return Ok((decision, true));
@@ -198,12 +202,12 @@ fn evaluate_general_stop_hook(root: &Path, session: &str) -> Result<(HookDecisio
     let Some(mut task) = read_task(root, session)? else {
         return Ok((HookDecision::Pass, false));
     };
-    let focus = FocusConfig::default();
     let decision = match task.status {
-        TaskStatus::Active => active_auto_poke(root, &mut task, &focus, "work")?
+        TaskStatus::Active if focus.enabled => active_auto_poke(root, &mut task, focus, "work")?
             .unwrap_or_else(|| HookDecision::Block(incomplete_task_message(session))),
-        TaskStatus::Ready => {
-            match ready_auto_poke(root, &mut task, &focus, &GENERAL_AUTO_POKE_PHASES, "work")? {
+        TaskStatus::Active => HookDecision::Block(incomplete_task_message(session)),
+        TaskStatus::Ready if focus.enabled => {
+            match ready_auto_poke(root, &mut task, focus, &GENERAL_AUTO_POKE_PHASES, "work")? {
                 Some(decision) => decision,
                 None => {
                     task.status = TaskStatus::Completed;
@@ -211,6 +215,11 @@ fn evaluate_general_stop_hook(root: &Path, session: &str) -> Result<(HookDecisio
                     HookDecision::Pass
                 }
             }
+        }
+        TaskStatus::Ready => {
+            task.status = TaskStatus::Completed;
+            write_task(root, &task)?;
+            HookDecision::Pass
         }
         TaskStatus::Completed | TaskStatus::Blocked => HookDecision::Pass,
     };
@@ -221,6 +230,19 @@ fn evaluate_general_stop_hook(root: &Path, session: &str) -> Result<(HookDecisio
         &decision,
     )?;
     Ok((decision, false))
+}
+
+fn global_focus_config() -> FocusConfig {
+    let home = env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
+    global_focus_config_at(home.as_deref())
+}
+
+fn global_focus_config_at(home: Option<&Path>) -> FocusConfig {
+    home.and_then(|home| ForgeGuardConfig::load_global(home).ok())
+        .map(|config| config.focus)
+        .unwrap_or_default()
 }
 
 fn evaluate_stop_state(
@@ -1569,4 +1591,52 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
     fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
     let output = serde_json::to_vec_pretty(value).context("failed to serialize ForgeGuard data")?;
     fs::write(path, output).with_context(|| format!("failed to write {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn global_general_guard_config_reads_focus_and_ignores_mode() {
+        let home = tempdir().expect("temporary home");
+        let mut config = ForgeGuardConfig::new("global", Vec::new());
+        config.mode = GuardMode::Strict;
+        config.focus.max_auto_pokes = 1;
+        config.save_global(home.path()).expect("save global config");
+
+        let focus = global_focus_config_at(Some(home.path()));
+
+        assert_eq!(focus.max_auto_pokes, 1);
+        assert_eq!(focus.min_confidence, 80);
+    }
+
+    #[test]
+    fn general_guard_uses_supplied_focus_limits_without_a_mode() {
+        let directory = tempdir().expect("temporary directory");
+        start_task(
+            directory.path(),
+            "global-focus",
+            "Review a non-code artifact",
+            &[],
+            false,
+        )
+        .expect("start task");
+        let focus = FocusConfig {
+            max_auto_pokes: 0,
+            ..FocusConfig::default()
+        };
+
+        let (decision, _) = evaluate_general_stop_hook(directory.path(), "global-focus", &focus)
+            .expect("evaluate General Guard");
+
+        assert!(matches!(decision, HookDecision::Stop(_)));
+        let task = task_state(directory.path(), "global-focus")
+            .expect("read task")
+            .expect("task");
+        assert_eq!(task.auto_pokes, 0);
+        assert_eq!(task.status, TaskStatus::Blocked);
+    }
 }

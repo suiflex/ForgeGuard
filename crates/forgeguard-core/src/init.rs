@@ -262,6 +262,14 @@ pub fn initialize_global(home: &Path, options: &InitOptions) -> Result<GlobalIni
         .with_context(|| format!("failed to resolve home directory {}", home.display()))?;
     let mut log = InstallLog::default();
 
+    // Global configuration belongs to General Guard and is created once. In
+    // particular, refreshes must not rewrite values the user has tuned.
+    write_config(
+        &home,
+        &ForgeGuardConfig::new("global", Vec::new()),
+        &mut log,
+    )?;
+
     install_agents(
         &home,
         InstallScope::Global,

@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.14.0](https://github.com/suiflex/ForgeGuard/compare/v0.13.0...v0.14.0) (2026-08-22)
+
+
+### Features
+
+* add new-code quality and security analysis ([122b4b2](https://github.com/suiflex/ForgeGuard/commit/122b4b211968a9d5c449d21dca1a54115f16d9e2))
+* expand general guard across roles and agents ([be27f1c](https://github.com/suiflex/ForgeGuard/commit/be27f1c9fcea6c9e4d1e675bbf3296cf226364b5))
+* productionize quality gates and expand General Guard ([2066544](https://github.com/suiflex/ForgeGuard/commit/2066544ee779d165ed684427ea40d1de45af39a4))
+* productionize security and supply-chain gates ([431e773](https://github.com/suiflex/ForgeGuard/commit/431e773d8fdcdbfea7432c1a4b0b2a0a9873810b))
+
+
+### Bug Fixes
+
+* prevent duplicate global lifecycle hooks ([d8cbe62](https://github.com/suiflex/ForgeGuard/commit/d8cbe62f7d935356678aae66aef17cd188be820e))
+* scope code guard modes to repositories ([0e1a485](https://github.com/suiflex/ForgeGuard/commit/0e1a48578c0304b893fd38559c6722898ddbe9ad))
+
 ## [0.13.1](https://github.com/suiflex/ForgeGuard/compare/v0.13.0...v0.13.1) (2026-08-22)
 
 ### Features

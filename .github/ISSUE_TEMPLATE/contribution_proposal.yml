@@ -1,0 +1,46 @@
+name: Contribution proposal
+description: Propose a focused first contribution before investing in a large change
+body:
+  - type: markdown
+    attributes:
+      value: Thank you for contributing. Keep the first slice small enough to review, verify, and merge independently.
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Who encounters this problem, and what happens today?
+    validations:
+      required: true
+  - type: textarea
+    id: contribution
+    attributes:
+      label: Proposed contribution
+      description: Describe the smallest useful change you want to make.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Documentation or example
+        - Detection preset
+        - Existing rule or fixture
+        - Agent integration
+        - General Guard lifecycle or role
+        - Reporting or developer experience
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification
+      description: What exact test, artifact, or observable result will prove the contribution works?
+    validations:
+      required: true
+  - type: textarea
+    id: help
+    attributes:
+      label: Help needed
+      description: Name any design decision, file, test, or maintainer guidance you need before starting.

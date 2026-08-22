@@ -1,4 +1,4 @@
-# ForgeGuard — engineering discipline for AI coding agents
+# ForgeGuard — stop AI agents from finishing before the work is verified
 
 <p align="center">
   <picture>
@@ -8,82 +8,81 @@
 </p>
 
 <p align="center">
-  <strong>Token-efficient quality layer for AI coding agents.<br>Codex · Claude Code · Cursor · OpenCode · Antigravity — one Rust binary, no LLM calls.</strong>
+  <strong>Deterministic quality gates for AI-assisted work.<br>General tasks and production code · one local Rust binary · no extra LLM calls.</strong>
 </p>
 
 <p align="center">
   <img src="assets/brand/readme-hero.png" alt="ForgeGuard turns an AI-generated code diff into a verified change through static analysis, tests, diff review, and local evidence." width="960">
 </p>
 
-ForgeGuard is a language- and framework-agnostic quality layer for Codex, Claude Code, Cursor, OpenCode, Antigravity, and agents that support `AGENTS.md` or Agent Skills. It applies to backend services, web frontends, native and cross-platform mobile apps, AI systems, data code, automation scripts, CLIs, and infrastructure code.
+An AI agent can say the task is complete while acceptance criteria are still open, evidence is missing, or a passing test suite hides an N+1 query. ForgeGuard gives the agent a bounded objective, intercepts supported completion paths, and requires local evidence before the work is accepted.
 
-Its goal is not merely code that runs. It makes agents work through:
+## The failure ForgeGuard stops
+
+```text
+Agent: "Done. Tests pass."
+                    ↓
+ForgeGuard completion gate runs locally
+                    ↓
+FG-DB-001: database operation inside iteration
+                    ↓
+Agent receives bounded evidence and fixes the code
+                    ↓
+Changed-code scan + configured checks pass
+                    ↓
+Completion is allowed
+```
+
+The same contract also catches non-code completion theater: unfinished product decisions, QA claims without artifacts, security conclusions without provenance, unsupported statistics, and work that silently drifted outside its declared scope.
+
+## Try it in 30 seconds
+
+Install on Linux or macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/suiflex/ForgeGuard/main/install.sh | sh
+```
+
+The one-line installer also installs the current global policies, skills, and supported hooks, so General Guard is available to supported hosts without modifying a repository. To add Code Guard, initialize the repository your agent is working in:
+
+```bash
+cd your-project
+forgeguard init
+forgeguard doctor
+forgeguard gate --changed --output compact
+```
+
+Windows, Homebrew, Scoop, npm, and source-build instructions are under [Installation options](#installation-options). Existing installations can be updated safely; see [Updating](#updating) for the difference between refreshing the binary, global assets, and project-owned files.
+
+## Two guards, one evidence contract
+
+| | General Guard | Code Guard |
+|---|---|---|
+| Use it for | Product discovery, QA, security reviews, business analysis, database work, architecture, content, statistics, research, and custom professions | Backend, frontend, mobile, AI/ML, data, scripts, APIs, infrastructure, and other repository changes |
+| Activation | Global agent integration; no project initialization required | `forgeguard init` inside a repository |
+| Prevents | Auto-poke loops, vague completion, missing acceptance coverage, unsupported claims, low hill-climbability, and file or MCP/resource scope drift | Everything in General Guard plus unreviewed diffs, static findings, missing tests, and failed formatter/linter/type-check/test/build commands |
+| Evidence | Objectives, metrics, baselines, targets, guardrails, todos, acceptance criteria, provenance, artifacts, confidence, and verification | The same task evidence plus Git changes, AST-assisted findings, configured commands, JSON/SARIF reports, and baselines |
+| Profiles | Open-ended: built-ins include product owner, QA, security engineer, business analyst, DBA, architect, content creator, and statistician | Language- and framework-agnostic workflow with capability-specific parser and semantic packs |
+
+General Guard does not pretend every job is software development. A QA engineer can declare a Playwright MCP resource and trace artifact; a product owner can require decision evidence; a statistician can bind a claim to a dataset and analysis artifact. Unknown profile names remain valid, so a profession does not need a ForgeGuard release before it can use the completion contract.
+
+Code Guard adds the repository workflow:
 
 ```text
 inspect → design → implement → test → review → verify
 ```
 
-ForgeGuard pushes generated code toward the discipline expected from a top-tier software engineering team: correct boundaries, reusable behavior, efficient algorithms and queries, explicit failure handling, focused tests, reviewed diffs, and claims backed by executed evidence.
+## What it catches
 
-Workflow supervision and configured repository commands work with any language. Parser, structural-rule, and semantic-pack coverage are separate capabilities: Tree-sitter supplies syntax evidence across the listed profiles, while bounded import/binding and local-wrapper provenance is currently available for JavaScript/TypeScript, Python, Rust, and Go. Run `forgeguard capabilities` for the exact matrix. ForgeGuard is an AST-assisted quality scanner, not a whole-program semantic analyzer; findings remain review evidence, not a substitute for compilers, tests, profilers, or query plans.
+- **Premature completion:** pending todos, uncovered acceptance criteria, insufficient confidence, missing verification, and goal contracts too incomplete to evaluate.
+- **Scope drift:** edits outside declared files and evidence drawn from undeclared resources such as MCP servers, URLs, datasets, or dashboards.
+- **AI code slop:** duplicate behavior, repeated linear lookup, accidental `O(n²)`, sorting or database/network I/O inside loops, unbounded fan-out, swallowed failures, and oversized complexity.
+- **Security and data risks:** hardcoded credentials, bounded taint flow into dangerous sinks, weak crypto/TLS, unsafe deserialization, XSS/path sinks, access-control hotspots, and broad `SELECT *` queries.
+- **Unproven claims:** performance, quality, security, product, QA, content, and statistical conclusions without the declared provenance or artifact.
 
-## Why ForgeGuard
+ForgeGuard supports Codex, Claude Code, Cursor, OpenCode, Hermes, OpenClaw, Antigravity, and agents that consume `AGENTS.md`. See [Agent support](#agent-support) for the exact policy, skill, and hook behavior of each integration.
 
-Model price and benchmark rank do not guarantee clean engineering. AI coding agents can produce working code while still introducing:
-
-- duplicated business logic and components;
-- repeated linear lookup or accidental `O(n²)` behavior;
-- database queries inside loops and N+1 patterns;
-- unbounded parallel requests;
-- weak test coverage or unexecuted verification;
-- abstractions at the wrong scope;
-- unsupported claims that code is clean, optimal, or production-ready.
-
-ForgeGuard corrects weak implementation assumptions before coding, teaches the relevant trade-off concisely, and verifies the result with deterministic local tooling.
-
-## Token and usage contract
-
-ForgeGuard is designed not to drain user context or model limits:
-
-- The hook runs a local Rust binary and repository commands; ForgeGuard itself makes no LLM or external API call.
-- Always-on policy stays compact; detailed backend, frontend, mobile, database, algorithm, testing, and AI references load only when relevant.
-- Passing completion hooks add no model context in Codex/Claude; supported lifecycle hooks inject one compact material-ambiguity reminder, Claude refreshes it per user prompt, and OpenCode receives the same rule through the shared skill.
-- Antigravity injects focus context only on the first model invocation of an execution.
-- Blocking feedback is deduplicated and capped at 2,000 characters and five findings.
-- Auto-poke is default-on and creates one host request per continuation; the generated limit is three and the hard cap is five.
-- Full evidence stays local in `.forgeguard/reports/latest.json`.
-- Unchanged worktrees use a local fingerprint cache instead of rerunning the gate.
-
-A blocked gate may cause the host agent to use another turn to fix real failures. ForgeGuard spends model usage only indirectly when additional corrective work is necessary.
-
-## MVP capabilities
-
-- Rust single-binary CLI.
-- Lightweight source detection across common backend, frontend, mobile, systems, data, script, and infrastructure languages.
-- AST-backed loop and call-site analysis across the published parser capability matrix.
-- Bounded database/network provenance packs for JavaScript/TypeScript, Python, Rust, and Go.
-- Codex `AGENTS.md` plus project skills.
-- Claude Code `CLAUDE.md` plus project skills.
-- Cursor always-on rule plus shared project skills.
-- OpenCode `AGENTS.md` plus shared project skills.
-- Hermes `AGENTS.md` plus project and global skills.
-- OpenClaw `AGENTS.md` plus project and global skills.
-- Antigravity rule, shared project skill, and native `Stop` hook.
-- Token-efficient `Stop` hooks: silent pass, bounded failure feedback, diff cache, and local full report.
-- Cross-agent material-ambiguity guard: native context hooks for Claude, Codex, Cursor, and Antigravity; shared skill fallback for OpenCode.
-- Session-scoped objective, profile, acceptance criteria, todo, structured evidence provenance, confidence, hill-climbability, auto-poke, resume, and file/resource scope-drift state.
-- Open-ended General Guard profiles with built-in review phases for product, QA, security, business analysis, database administration, architecture, content creation, and statistics.
-- One `forgeguard-engineering` skill with conditional code, product, QA, security, analysis, architecture, content, statistics, database, AI, and testing references.
-- Static rules for nested iteration, repeated linear lookup, sorting in loops, database/network I/O in loops, unbounded fan-out, complexity, hardcoded credentials, bounded taint flow, weak crypto/TLS, unsafe deserialization, XSS/path sinks, swallowed exceptions, access-control hotspots, `SELECT *`, and exact/renamed/same-operation duplicates.
-- Compiler/linter delegation for dead code, unused imports, nullability, resource lifetime, and ecosystem-specific correctness. Optional dependency-audit, license-inventory/policy, and SBOM commands are discovered but disabled by default so realtime gates make no network calls.
-- Clean-as-you-code review at added/edited-line scope, with optional Git base-ref comparison and changed-line LCOV policy.
-- Automatic formatter, linter, type-check, test, and build command discovery.
-- Repository-scoped `default`, `lite`, and `strict` Code Guard modes.
-- Committed finding baselines for adopting strict gates without accepting new debt.
-- Interactive mode selection during project `forgeguard init` and via `forgeguard mode`.
-- Human-readable, JSON, and SARIF 2.1.0 reports.
-
-## Install
+## Installation options
 
 No Rust, Cargo, Node.js, or Python required. The installer downloads the correct GitHub Release artifact for the current OS and CPU, verifies its SHA-256 checksum, adds ForgeGuard to the user `PATH`, and installs global rules, skills, and supported hooks.
 
@@ -421,6 +420,35 @@ integration remains policy-enforced rather than claiming a blocking hook.
 
 Other agents receive the universal CLI gate immediately. Agents that understand the emerging `AGENTS.md` and Agent Skills conventions also receive ForgeGuard guidance without a dedicated adapter.
 
+## Technical contract and capabilities
+
+ForgeGuard is designed not to drain user context or model limits:
+
+- The hook runs a local Rust binary and repository commands; ForgeGuard itself makes no LLM or external API call.
+- Always-on policy stays compact; detailed role and engineering references load only when relevant.
+- Passing completion hooks add no model context in Codex/Claude. Blocking feedback is deduplicated and capped at 2,000 characters and five findings.
+- Auto-poke is default-on and creates one host request per continuation; the generated limit is three and the hard cap is five.
+- Full evidence stays local in `.forgeguard/reports/latest.json`.
+- Unchanged worktrees use a local fingerprint cache instead of rerunning the gate.
+
+A blocked gate may cause the host agent to use another turn to correct real failures. ForgeGuard spends model usage only indirectly when additional work is necessary.
+
+Core capabilities include:
+
+- A Rust single-binary CLI with human-readable, JSON, and SARIF 2.1.0 reports.
+- Open-ended General Guard profiles and role-specific review phases for product, QA, security, business analysis, database administration, architecture, content, and statistics.
+- Session-scoped objectives, metrics, acceptance criteria, todos, evidence provenance, artifacts, confidence, deterministic hill-climbability, bounded auto-poke, resume, and file/resource scope state.
+- Lightweight source detection and automatic formatter, linter, type-check, test, and build command discovery.
+- AST-backed loop and call-site analysis across the published parser capability matrix.
+- Bounded database/network provenance packs for JavaScript/TypeScript, Python, Rust, and Go.
+- Clean-as-you-code review at added/edited-line scope, optional base-ref comparison, changed-line LCOV policy, and committed finding baselines.
+- Repository-scoped `default`, `lite`, and `strict` Code Guard modes.
+- Optional dependency-audit, license-inventory/policy, and SBOM commands, discovered but disabled by default so realtime gates make no network calls.
+
+Workflow supervision and configured repository commands work with any language. Parser, structural-rule, and semantic-pack coverage are separate capabilities: Tree-sitter supplies syntax evidence across the listed profiles, while bounded import/binding and local-wrapper provenance is currently available for JavaScript/TypeScript, Python, Rust, and Go. Run `forgeguard capabilities` for the exact matrix.
+
+ForgeGuard is an AST-assisted quality scanner, not a whole-program semantic analyzer. Findings are review evidence, not substitutes for compilers, tests, profilers, security review, statistical validation, or query plans.
+
 ## Configuration
 
 Example:
@@ -607,6 +635,18 @@ ForgeGuard separates rules into:
 3. **Evidence-based:** performance and quality improvements require benchmarks, query plans, profiler output, or evaluation reports.
 
 See [Rule catalog](docs/RULES.md) and [Architecture](docs/ARCHITECTURE.md).
+
+## Contributing
+
+ForgeGuard grows through concrete problems, reproducible examples, and focused changes—not star campaigns.
+
+- Start with the [first-contribution guide](CONTRIBUTING.md).
+- Browse [`good first issue`](https://github.com/suiflex/ForgeGuard/labels/good%20first%20issue) and [`help wanted`](https://github.com/suiflex/ForgeGuard/labels/help%20wanted) work.
+- Propose a bounded contribution with the [contribution proposal](https://github.com/suiflex/ForgeGuard/issues/new?template=contribution_proposal.yml).
+- Bring an idea, request help, publish an integration, or show what ForgeGuard caught in [Discussions](https://github.com/suiflex/ForgeGuard/discussions).
+- Use the [roadmap](docs/ROADMAP.md) to find starter, intermediate, and advanced contribution lanes.
+
+If ForgeGuard catches a real issue in your workflow, a sanitized reproduction or screenshot is more useful than a generic endorsement. It gives maintainers a case to preserve and other users a reason to try the tool.
 
 ## Development
 

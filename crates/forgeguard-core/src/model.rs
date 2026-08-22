@@ -52,6 +52,8 @@ pub struct Finding {
     pub blocking: bool,
     pub path: PathBuf,
     pub line: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<usize>,
     pub evidence: String,
     pub recommendation: String,
 }
@@ -83,6 +85,8 @@ pub struct CheckResult {
     pub exit_code: Option<i32>,
     pub duration_ms: u128,
     pub output: String,
+    #[serde(default)]
+    pub cached: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,4 +1,4 @@
-# ForgeGuard — engineering discipline for AI coding agents
+# ForgeGuard — stop AI agents from finishing before the work is verified
 
 <p align="center">
   <picture>
@@ -8,77 +8,81 @@
 </p>
 
 <p align="center">
-  <strong>Token-efficient quality layer for AI coding agents.<br>Codex · Claude Code · Cursor · OpenCode · Antigravity — one Rust binary, no LLM calls.</strong>
+  <strong>Deterministic quality gates for AI-assisted work.<br>General tasks and production code · one local Rust binary · no extra LLM calls.</strong>
 </p>
 
 <p align="center">
   <img src="assets/brand/readme-hero.png" alt="ForgeGuard turns an AI-generated code diff into a verified change through static analysis, tests, diff review, and local evidence." width="960">
 </p>
 
-ForgeGuard is a language- and framework-agnostic quality layer for Codex, Claude Code, Cursor, OpenCode, Antigravity, and agents that support `AGENTS.md` or Agent Skills. It applies to backend services, web frontends, native and cross-platform mobile apps, AI systems, data code, automation scripts, CLIs, and infrastructure code.
+An AI agent can say the task is complete while acceptance criteria are still open, evidence is missing, or a passing test suite hides an N+1 query. ForgeGuard gives the agent a bounded objective, intercepts supported completion paths, and requires local evidence before the work is accepted.
 
-Its goal is not merely code that runs. It makes agents work through:
+## The failure ForgeGuard stops
+
+```text
+Agent: "Done. Tests pass."
+                    ↓
+ForgeGuard completion gate runs locally
+                    ↓
+FG-DB-001: database operation inside iteration
+                    ↓
+Agent receives bounded evidence and fixes the code
+                    ↓
+Changed-code scan + configured checks pass
+                    ↓
+Completion is allowed
+```
+
+The same contract also catches non-code completion theater: unfinished product decisions, QA claims without artifacts, security conclusions without provenance, unsupported statistics, and work that silently drifted outside its declared scope.
+
+## Try it in 30 seconds
+
+Install on Linux or macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/suiflex/ForgeGuard/main/install.sh | sh
+```
+
+The one-line installer also installs the current global policies, skills, and supported hooks, so General Guard is available to supported hosts without modifying a repository. To add Code Guard, initialize the repository your agent is working in:
+
+```bash
+cd your-project
+forgeguard init
+forgeguard doctor
+forgeguard gate --changed --output compact
+```
+
+Windows, Homebrew, Scoop, npm, and source-build instructions are under [Installation options](#installation-options). Existing installations can be updated safely; see [Updating](#updating) for the difference between refreshing the binary, global assets, and project-owned files.
+
+## Two guards, one evidence contract
+
+| | General Guard | Code Guard |
+|---|---|---|
+| Use it for | Product discovery, QA, security reviews, business analysis, database work, architecture, content, statistics, research, and custom professions | Backend, frontend, mobile, AI/ML, data, scripts, APIs, infrastructure, and other repository changes |
+| Activation | Global agent integration; no project initialization required | `forgeguard init` inside a repository |
+| Prevents | Auto-poke loops, vague completion, missing acceptance coverage, unsupported claims, low hill-climbability, and file or MCP/resource scope drift | Everything in General Guard plus unreviewed diffs, static findings, missing tests, and failed formatter/linter/type-check/test/build commands |
+| Evidence | Objectives, metrics, baselines, targets, guardrails, todos, acceptance criteria, provenance, artifacts, confidence, and verification | The same task evidence plus Git changes, AST-assisted findings, configured commands, JSON/SARIF reports, and baselines |
+| Profiles | Open-ended: built-ins include product owner, QA, security engineer, business analyst, DBA, architect, content creator, and statistician | Language- and framework-agnostic workflow with capability-specific parser and semantic packs |
+
+General Guard does not pretend every job is software development. A QA engineer can declare a Playwright MCP resource and trace artifact; a product owner can require decision evidence; a statistician can bind a claim to a dataset and analysis artifact. Unknown profile names remain valid, so a profession does not need a ForgeGuard release before it can use the completion contract.
+
+Code Guard adds the repository workflow:
 
 ```text
 inspect → design → implement → test → review → verify
 ```
 
-ForgeGuard pushes generated code toward the discipline expected from a top-tier software engineering team: correct boundaries, reusable behavior, efficient algorithms and queries, explicit failure handling, focused tests, reviewed diffs, and claims backed by executed evidence.
+## What it catches
 
-Workflow supervision and configured repository commands work with any language. Parser, structural-rule, and semantic-pack coverage are separate capabilities: Tree-sitter supplies syntax evidence across the listed profiles, while bounded import/binding and local-wrapper provenance is currently available for JavaScript/TypeScript, Python, Rust, and Go. Run `forgeguard capabilities` for the exact matrix. ForgeGuard is an AST-assisted quality scanner, not a whole-program semantic analyzer; findings remain review evidence, not a substitute for compilers, tests, profilers, or query plans.
+- **Premature completion:** pending todos, uncovered acceptance criteria, insufficient confidence, missing verification, and goal contracts too incomplete to evaluate.
+- **Scope drift:** edits outside declared files and evidence drawn from undeclared resources such as MCP servers, URLs, datasets, or dashboards.
+- **AI code slop:** duplicate behavior, repeated linear lookup, accidental `O(n²)`, sorting or database/network I/O inside loops, unbounded fan-out, swallowed failures, and oversized complexity.
+- **Security and data risks:** hardcoded credentials, bounded taint flow into dangerous sinks, weak crypto/TLS, unsafe deserialization, XSS/path sinks, access-control hotspots, and broad `SELECT *` queries.
+- **Unproven claims:** performance, quality, security, product, QA, content, and statistical conclusions without the declared provenance or artifact.
 
-## Why ForgeGuard
+ForgeGuard supports Codex, Claude Code, Cursor, OpenCode, Hermes, OpenClaw, Antigravity, and agents that consume `AGENTS.md`. See [Agent support](#agent-support) for the exact policy, skill, and hook behavior of each integration.
 
-Model price and benchmark rank do not guarantee clean engineering. AI coding agents can produce working code while still introducing:
-
-- duplicated business logic and components;
-- repeated linear lookup or accidental `O(n²)` behavior;
-- database queries inside loops and N+1 patterns;
-- unbounded parallel requests;
-- weak test coverage or unexecuted verification;
-- abstractions at the wrong scope;
-- unsupported claims that code is clean, optimal, or production-ready.
-
-ForgeGuard corrects weak implementation assumptions before coding, teaches the relevant trade-off concisely, and verifies the result with deterministic local tooling.
-
-## Token and usage contract
-
-ForgeGuard is designed not to drain user context or model limits:
-
-- The hook runs a local Rust binary and repository commands; ForgeGuard itself makes no LLM or external API call.
-- Always-on policy stays compact; detailed backend, frontend, mobile, database, algorithm, testing, and AI references load only when relevant.
-- Passing completion hooks add no model context in Codex/Claude; supported lifecycle hooks inject one compact material-ambiguity reminder, Claude refreshes it per user prompt, and OpenCode receives the same rule through the shared skill.
-- Antigravity injects focus context only on the first model invocation of an execution.
-- Blocking feedback is deduplicated and capped at 2,000 characters and five findings.
-- Auto-poke is default-on and creates one host request per continuation; the generated limit is three and the hard cap is five.
-- Full evidence stays local in `.forgeguard/reports/latest.json`.
-- Unchanged worktrees use a local fingerprint cache instead of rerunning the gate.
-
-A blocked gate may cause the host agent to use another turn to fix real failures. ForgeGuard spends model usage only indirectly when additional corrective work is necessary.
-
-## MVP capabilities
-
-- Rust single-binary CLI.
-- Lightweight source detection across common backend, frontend, mobile, systems, data, script, and infrastructure languages.
-- AST-backed loop and call-site analysis across the published parser capability matrix.
-- Bounded database/network provenance packs for JavaScript/TypeScript, Python, Rust, and Go.
-- Codex `AGENTS.md` plus project skills.
-- Claude Code `CLAUDE.md` plus project skills.
-- Cursor always-on rule plus shared project skills.
-- OpenCode `AGENTS.md` plus shared project skills.
-- Antigravity rule, shared project skill, and native `Stop` hook.
-- Token-efficient `Stop` hooks: silent pass, bounded failure feedback, diff cache, and local full report.
-- Cross-agent material-ambiguity guard: native context hooks for Claude, Codex, Cursor, and Antigravity; shared skill fallback for OpenCode.
-- Session-scoped objective, todo, confidence, hill-climbability, auto-poke, resume, and scope-drift state.
-- One `forgeguard-engineering` skill with conditional clean-code, algorithm, backend, frontend, mobile, database, AI, and testing references.
-- Static rules for nested iteration, repeated linear lookup, sorting in loops, database I/O in loops, external requests in loops, unbounded fan-out, `SELECT *`, and potential duplicated blocks.
-- Automatic formatter, linter, type-check, test, and build command discovery.
-- `default`, `lite`, and `strict` operating modes with project and global persistence.
-- Committed finding baselines for adopting strict gates without accepting new debt.
-- Interactive mode selection during `forgeguard init` and via `forgeguard mode`.
-- Human-readable, JSON, and SARIF 2.1.0 reports.
-
-## Install
+## Installation options
 
 No Rust, Cargo, Node.js, or Python required. The installer downloads the correct GitHub Release artifact for the current OS and CPU, verifies its SHA-256 checksum, adds ForgeGuard to the user `PATH`, and installs global rules, skills, and supported hooks.
 
@@ -238,9 +242,10 @@ forgeguard init --refresh    # replace the drifted files, no prompt
 forgeguard init --force      # replace every ForgeGuard-owned file, drifted or not
 ```
 
-Neither flag touches `.forgeguard/config.toml`, and neither writes through a symlink: a
-repository that points `AGENTS.md` at `CLAUDE.md` keeps both as they are, because replacing
-the link would edit the file at the other end.
+Both flags preserve existing `.forgeguard/config.toml` values and append newly detected command
+presets by name. They never replace existing command definitions. Neither writes through a
+symlink: a repository that points `AGENTS.md` at `CLAUDE.md` keeps both as they are, because
+replacing the link would edit the file at the other end.
 
 ## Quick start
 
@@ -261,6 +266,13 @@ Review only files changed in Git:
 
 ```bash
 forgeguard review
+```
+
+Review branch or pull-request changes against a base revision:
+
+```bash
+forgeguard review --base origin/main
+forgeguard gate --changed --base origin/main
 ```
 
 Run all static rules but skip repository commands:
@@ -319,6 +331,8 @@ Adding a target adds only its own files: `--agent codex` contributes `AGENTS.md`
 
 Existing policy and skill files are not overwritten unless `--force` is supplied. Hook installation merges one ForgeGuard entry into existing JSON and preserves unrelated settings. Global installation writes ForgeGuard-owned skills, compact policies, and hook entries for selected agents. `--force` also removes obsolete ForgeGuard-owned role-skill directories without touching unrelated skills.
 
+Global lifecycle hooks supervise General Guard only. Inside a repository initialized with Code Guard, they defer to the repository hook so one lifecycle event produces one ForgeGuard decision. Re-running the installer normalizes duplicate ForgeGuard entries left by older global installations while preserving unrelated hooks.
+
 When a project `.gitignore` already exists, `forgeguard init` appends the generated directories for
 the selected agents (`.codex/`, `.claude/`, `.cursor/`, and/or `.agents/`). It preserves existing
 patterns, avoids duplicate entries, and does not create a root `.gitignore`. The `AGENTS.md`-only
@@ -350,6 +364,8 @@ targets add no directory, so they add no ignore entry.
    | Claude Code | `.claude/` |
    | Cursor | `.cursor/`, `.cursorrules` |
    | OpenCode | `.opencode/`, `opencode.json` |
+   | Hermes | `.hermes/` |
+   | OpenClaw | `.openclaw/`, `openclaw.json` |
    | Antigravity | `.agents/rules/`, `.agents/hooks.json`, `.agent/rules/` |
    | Windsurf / Devin | `.windsurf/`, `.devin/`, `.windsurfrules` |
    | GitHub Copilot | `.github/copilot-instructions.md`, `.github/instructions/` |
@@ -379,6 +395,8 @@ what was installed.
 | Cursor | `cursor` | `.cursor/rules` | `.agents/skills` | `stop` hook |
 | Antigravity | `antigravity` | `.agents/rules` | `.agents/skills` | Native `Stop` hook |
 | OpenCode | `opencode` | `AGENTS.md` | `.agents/skills` | Policy-enforced gate |
+| Hermes | `hermes` | `AGENTS.md` | `.agents/skills` | Policy-enforced gate |
+| OpenClaw | `openclaw` | `AGENTS.md` | `.agents/skills` | `before_agent_finalize` plugin hook |
 | Windsurf / Devin | `windsurf` | `AGENTS.md` | — | Policy-enforced gate |
 | GitHub Copilot | `copilot` | `AGENTS.md` | — | Policy-enforced gate |
 | Cline | `cline` | `AGENTS.md` | — | Policy-enforced gate |
@@ -393,10 +411,45 @@ User-level rules are not shared the same way, so `--global` follows each agent's
 documented path instead: Cline reads `~/.agents/AGENTS.md`, Windsurf/Devin reads
 `~/.codeium/windsurf/memories/global_rules.md`, and Roo reads `~/.roo/rules/`. Copilot
 instructions are repository-scoped, so a global install writes nothing for it.
+Hermes and OpenClaw receive the engineering skill in their native global directories,
+`~/.hermes/skills/` and `~/.openclaw/skills/`, respectively. OpenClaw also receives an
+enabled native plugin under `~/.openclaw/extensions/forgeguard/`; it restores task context
+before each prompt and runs the completion gate through `before_agent_finalize`. Restart the
+OpenClaw gateway after installation. Hermes' completion hooks are observers, so its global
+integration remains policy-enforced rather than claiming a blocking hook.
 
 [OpenCode officially discovers](https://opencode.ai/docs/skills) both `AGENTS.md` and `.agents/skills`. Its current plugin lifecycle exposes `session.idle` only after the agent loop stops, so ForgeGuard does not claim a reliable blocking `Stop` hook there. The compact policy requires `forgeguard gate --changed --output compact` before completion. [Antigravity provides a native blocking `Stop` protocol](https://antigravity.google/docs/hooks), so failures automatically return the agent to its execution loop.
 
 Other agents receive the universal CLI gate immediately. Agents that understand the emerging `AGENTS.md` and Agent Skills conventions also receive ForgeGuard guidance without a dedicated adapter.
+
+## Technical contract and capabilities
+
+ForgeGuard is designed not to drain user context or model limits:
+
+- The hook runs a local Rust binary and repository commands; ForgeGuard itself makes no LLM or external API call.
+- Always-on policy stays compact; detailed role and engineering references load only when relevant.
+- Passing completion hooks add no model context in Codex/Claude. Blocking feedback is deduplicated and capped at 2,000 characters and five findings.
+- Auto-poke is default-on and creates one host request per continuation; the generated limit is three and the hard cap is five.
+- Full evidence stays local in `.forgeguard/reports/latest.json`.
+- Unchanged worktrees use a local fingerprint cache instead of rerunning the gate.
+
+A blocked gate may cause the host agent to use another turn to correct real failures. ForgeGuard spends model usage only indirectly when additional work is necessary.
+
+Core capabilities include:
+
+- A Rust single-binary CLI with human-readable, JSON, and SARIF 2.1.0 reports.
+- Open-ended General Guard profiles and role-specific review phases for product, QA, security, business analysis, database administration, architecture, content, and statistics.
+- Session-scoped objectives, metrics, acceptance criteria, todos, evidence provenance, artifacts, confidence, deterministic hill-climbability, bounded auto-poke, resume, and file/resource scope state.
+- Lightweight source detection and automatic formatter, linter, type-check, test, and build command discovery.
+- AST-backed loop and call-site analysis across the published parser capability matrix.
+- Bounded database/network provenance packs for JavaScript/TypeScript, Python, Rust, and Go.
+- Clean-as-you-code review at added/edited-line scope, optional base-ref comparison, changed-line LCOV policy, and committed finding baselines.
+- Repository-scoped `default`, `lite`, and `strict` Code Guard modes.
+- Optional dependency-audit, license-inventory/policy, and SBOM commands, discovered but disabled by default so realtime gates make no network calls.
+
+Workflow supervision and configured repository commands work with any language. Parser, structural-rule, and semantic-pack coverage are separate capabilities: Tree-sitter supplies syntax evidence across the listed profiles, while bounded import/binding and local-wrapper provenance is currently available for JavaScript/TypeScript, Python, Rust, and Go. Run `forgeguard capabilities` for the exact matrix.
+
+ForgeGuard is an AST-assisted quality scanner, not a whole-program semantic analyzer. Findings are review evidence, not substitutes for compilers, tests, profilers, security review, statistical validation, or query plans.
 
 ## Configuration
 
@@ -415,6 +468,10 @@ max_file_bytes = 1000000
 include_tests = false
 extra_excludes = ["generated/"]
 duplicate_block_lines = 6
+coverage_report = "coverage/lcov.info"
+min_changed_coverage = 80
+taint_sources = ["readExternalInput"]
+trusted_sanitizers = ["validateForAllSinks"]
 
 [policies]
 warnings_block = false
@@ -447,9 +504,23 @@ enabled = true
 timeout_seconds = 600
 ```
 
+Detected dependency-audit, license-inventory/policy, and SBOM commands are installed as disabled required
+checks. After reviewing and enabling them, changed gates run them only when a dependency manifest
+or lockfile changes. Eligible successful results are reused for 24 hours only while the complete
+dependency fingerprint is unchanged; failures always rerun. Results, including configured-check
+failures, are included in JSON and SARIF. Generated SBOM JSON is kept
+under `.forgeguard/reports/sbom/`; complete audit and license-tool output stays under
+`.forgeguard/reports/supply-chain/`. Tool-specific commands still require their native CLI to be
+installed.
+
+`taint_sources` extends the request/input source catalog. `trusted_sanitizers` is an explicit
+project trust decision and applies to every sink context; prefer built-in context-specific HTML,
+path, and shell sanitizers where possible.
+
 ### Modes
 
-ForgeGuard supports three operating modes:
+Code Guard supports three repository-scoped operating modes after `forgeguard init` creates
+`.forgeguard/config.toml`:
 
 - `default`: failed required commands block; static findings block only when a rule sets `block = true`.
 - `lite`: report-only mode for baselining or cleanup work. Static findings do not block.
@@ -457,9 +528,20 @@ ForgeGuard supports three operating modes:
 
 Version 1 configs preserve the old Strict behavior that blocks only Error findings. Run `forgeguard config migrate` to opt into version 2 policy; older `mode = "guard"` values still load as `strict`.
 
-Per-rule `enabled`, `severity`, and `block` override global policy. `Lite` always keeps static findings nonblocking. Required command failures block in every mode.
+Per-rule `enabled`, `severity`, and `block` override mode policy. `Lite` always keeps static findings nonblocking. Required command failures block in every mode.
 
-Focus state and scope checks are local and make no LLM calls. `max_retries` bounds corrective turns; `no_progress_limit` stops a session that produces no repository or task-state progress. `auto_poke` is enabled automatically by `forgeguard init`; each continuation creates a new host request and consumes model tokens, so `max_auto_pokes` defaults to three and has a hard cap of five. Set `auto_poke = false` only when manually opting out. Pending todos, confidence below `min_confidence`, or goal-contract completeness below `min_hill_climbability` keep the task active. Hill-climbability is a deterministic 0–100 completeness score: metric, baseline, target, guardrail, and verification contribute 20 points each. ForgeGuard does not guess these fields from prose. `forgeguard task start --semantic` only asks a supported host to use its native goal evaluator.
+These modes do not apply to General Guard or global agent installation. For upgrade compatibility,
+the legacy `forgeguard mode --global` command shape is still recognized but returns repository-mode
+migration guidance. Existing `mode` fields in `~/.forgeguard/config.toml` remain readable, and global
+installation or refresh does not rewrite that file; the field no longer controls guard behavior.
+
+`forgeguard init --global` creates `~/.forgeguard/config.toml` once when it is missing. General Guard
+reads only its General Guard lifecycle settings from `[focus]`: `enabled`, `auto_poke`,
+`max_auto_pokes`, `min_confidence`, and `min_hill_climbability`. Repository-gate
+`max_retries` and `no_progress_limit` remain Code Guard-only. Later global installs and
+refreshes preserve the file exactly.
+
+With a global hook installed, General Guard applies task state, role-aware review, acceptance coverage, file and non-file resource scope checks, declared evidence provenance, and bounded auto-poke without project initialization or repository commands. Profiles are open-ended, so `--profile content-creator`, `--profile statistician`, or a custom profession works without a new ForgeGuard release. `forgeguard init` activates Code Guard: the same focus contract plus `inspect → design → implement → test → review → verify`, changed-source scanning, configured checks, and reports. Each continuation creates a new host request and consumes model tokens, so `max_auto_pokes` defaults to three and has a hard cap of five. Pending todos, confidence below `min_confidence`, uncovered acceptance criteria, or goal-contract completeness below `min_hill_climbability` keep the task active. Hill-climbability is a deterministic 0–100 completeness score: metric, baseline, target, guardrail, and verification contribute 20 points each. ForgeGuard does not guess these fields from prose. `forgeguard task start --semantic` only asks a supported host to use its native goal evaluator.
 
 See [Focus, auto-poke, and hill-climbability](docs/FOCUS.md) for the lifecycle, headless behavior, token bounds, upgrade path, and examples.
 
@@ -475,7 +557,23 @@ forgeguard task todo --session "$SESSION" --done 1
 forgeguard task ready --session "$SESSION" --confidence 90 --evidence "benchmark: p95 284 ms"
 ```
 
-Set project mode:
+Example non-code task using Playwright MCP:
+
+```bash
+forgeguard task start --session "$SESSION" --profile qa \
+  --objective "Verify guest checkout on staging" \
+  --metric "checkout acceptance scenarios passed" --baseline "0 of 3" --target "3 of 3" \
+  --guardrail "do not create production orders" --verification "Playwright trace reviewed" \
+  --resource "mcp:playwright" --resource "url:https://staging.example.com/checkout" \
+  --acceptance "guest can place an order" --acceptance "declined payment shows a safe error" \
+  --todo "run guest checkout scenarios"
+forgeguard task todo --session "$SESSION" --done 1
+forgeguard task ready --session "$SESSION" --confidence 90 \
+  --source "mcp:playwright" --artifact "artifact:checkout-trace.zip" \
+  --criterion 1 --criterion 2 --evidence "3 scenarios passed on staging"
+```
+
+Set repository mode:
 
 ```bash
 forgeguard mode default
@@ -483,17 +581,10 @@ forgeguard mode lite
 forgeguard mode strict
 ```
 
-Set user-level/global mode:
-
-```bash
-forgeguard mode strict --global
-```
-
 Inspect mode as JSON:
 
 ```bash
 forgeguard mode --json
-forgeguard mode --global --json
 ```
 
 When run in a terminal without an explicit mode, `forgeguard mode` opens the same interactive mode picker used by `forgeguard init`. Non-TTY calls and `--json` never prompt, so scripts and CI do not hang.
@@ -506,14 +597,14 @@ When run in a terminal without an explicit mode, `forgeguard mode` opens the sam
 | `forgeguard detect` | Detect languages, frameworks, database tools, tests, and commands. |
 | `forgeguard capabilities` | Show workflow, parser, structural-rule, and semantic-pack coverage. |
 | `forgeguard doctor` | Verify configuration, Git, and required local tools. |
-| `forgeguard mode` | Check or change project/global operating mode. |
-| `forgeguard config migrate` | Upgrade config v1 to v2 without resetting commands or focus settings. |
-| `forgeguard gate` | Run static rules and configured quality commands. |
-| `forgeguard review` | Scan Git-changed files without running commands. |
+| `forgeguard mode` | Check or change the current repository's Code Guard mode. |
+| `forgeguard config migrate` | Upgrade config v1 to v2 and append newly detected command presets without resetting existing commands or focus settings. |
+| `forgeguard gate` | Run static rules and configured quality commands; `--changed --base <ref>` scopes findings to new code. |
+| `forgeguard review` | Scan added/edited Git lines without running commands; `--base <ref>` compares a branch or pull request. |
 | `forgeguard baseline create` | Record current static findings so gates report only new findings. |
-| `forgeguard task start` | Register objective, goal metrics, todos, and optional scope prefixes. |
+| `forgeguard task start` | Register objective, open-ended profile, goal metrics, acceptance criteria, todos, file scopes, and non-file resources. |
 | `forgeguard task todo` | Add todos or mark 1-based todo indexes complete. |
-| `forgeguard task ready` | Submit exact evidence and optional model confidence before the completion gate. |
+| `forgeguard task ready` | Submit exact evidence, provenance, artifacts, acceptance coverage, and optional model confidence before the completion gate. |
 | `forgeguard task status` | Inspect session-scoped objective state. |
 | `forgeguard hook stop/context/scope` | Internal lifecycle adapters for completion, objective restoration, and scope warnings. |
 
@@ -546,6 +637,18 @@ ForgeGuard separates rules into:
 3. **Evidence-based:** performance and quality improvements require benchmarks, query plans, profiler output, or evaluation reports.
 
 See [Rule catalog](docs/RULES.md) and [Architecture](docs/ARCHITECTURE.md).
+
+## Contributing
+
+ForgeGuard grows through concrete problems, reproducible examples, and focused changes—not star campaigns.
+
+- Start with the [first-contribution guide](CONTRIBUTING.md).
+- Browse [`good first issue`](https://github.com/suiflex/ForgeGuard/labels/good%20first%20issue) and [`help wanted`](https://github.com/suiflex/ForgeGuard/labels/help%20wanted) work.
+- Propose a bounded contribution with the [contribution proposal](https://github.com/suiflex/ForgeGuard/issues/new?template=contribution_proposal.yml).
+- Bring an idea, request help, publish an integration, or show what ForgeGuard caught in [Discussions](https://github.com/suiflex/ForgeGuard/discussions).
+- Use the [roadmap](docs/ROADMAP.md) to find starter, intermediate, and advanced contribution lanes.
+
+If ForgeGuard catches a real issue in your workflow, a sanitized reproduction or screenshot is more useful than a generic endorsement. It gives maintainers a case to preserve and other users a reason to try the tool.
 
 ## Development
 

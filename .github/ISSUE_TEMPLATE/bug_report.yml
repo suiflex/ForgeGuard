@@ -31,6 +31,24 @@ body:
     validations:
       required: true
   - type: dropdown
+    id: agent
+    attributes:
+      label: Agent or host
+      description: Select the environment where ForgeGuard was running.
+      options:
+        - Codex
+        - Claude Code
+        - Cursor
+        - OpenCode
+        - Hermes
+        - OpenClaw
+        - Antigravity
+        - AGENTS.md-compatible agent
+        - CLI only
+        - Other
+    validations:
+      required: true
+  - type: dropdown
     id: os
     attributes:
       label: Operating system
@@ -45,5 +63,10 @@ body:
     id: logs
     attributes:
       label: Relevant output
-      description: Remove secrets and personal information before posting.
+      description: Include the smallest useful compact output. Remove secrets and personal information before posting.
       render: shell
+  - type: textarea
+    id: repository
+    attributes:
+      label: Minimal reproduction
+      description: Link a minimal repository or paste the smallest sanitized files/configuration that reproduce the problem.

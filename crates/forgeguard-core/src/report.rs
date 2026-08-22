@@ -69,9 +69,10 @@ pub fn render_gate(report: &GateReport) -> String {
         let _ = writeln!(output, "\nChecks:");
         for check in &report.checks {
             let marker = if check.success { "PASS" } else { "FAIL" };
+            let cache = if check.cached { ", cached" } else { "" };
             let _ = writeln!(
                 output,
-                "  [{marker}] {} ({} ms): {}",
+                "  [{marker}] {} ({} ms{cache}): {}",
                 check.name, check.duration_ms, check.command
             );
             if !check.success && !check.output.is_empty() {
@@ -122,7 +123,7 @@ pub fn render_gate_compact(report: &GateReport) -> String {
 }
 
 pub fn render_sarif(report: &GateReport) -> Result<String, serde_json::Error> {
-    let rules = RULES
+    let mut rules = RULES
         .iter()
         .map(|rule| {
             json!({
@@ -134,7 +135,16 @@ pub fn render_sarif(report: &GateReport) -> Result<String, serde_json::Error> {
             })
         })
         .collect::<Vec<_>>();
-    let results = report
+    rules.extend(report.checks.iter().filter(|check| !check.success).map(|check| {
+        let id = check_rule_id(&check.name);
+        json!({
+            "id": id,
+            "name": format!("Failed quality check: {}", check.name),
+            "shortDescription": {"text": format!("Configured quality check `{}` failed", check.name)},
+            "defaultConfiguration": {"level": if check.required { "error" } else { "warning" }},
+        })
+    }));
+    let mut results = report
         .findings
         .iter()
         .map(|finding| {
@@ -147,7 +157,10 @@ pub fn render_sarif(report: &GateReport) -> Result<String, serde_json::Error> {
                 "locations": [{
                     "physicalLocation": {
                         "artifactLocation": {"uri": finding.path.to_string_lossy()},
-                        "region": {"startLine": finding.line},
+                        "region": {
+                            "startLine": finding.line,
+                            "endLine": finding.end_line.unwrap_or(finding.line),
+                        },
                     }
                 }],
                 "partialFingerprints": {
@@ -160,6 +173,29 @@ pub fn render_sarif(report: &GateReport) -> Result<String, serde_json::Error> {
             })
         })
         .collect::<Vec<_>>();
+    results.extend(
+        report
+            .checks
+            .iter()
+            .filter(|check| !check.success)
+            .map(|check| {
+                let evidence = check
+                    .output
+                    .lines()
+                    .find(|line| !line.trim().is_empty())
+                    .unwrap_or("command failed");
+                json!({
+                    "ruleId": check_rule_id(&check.name),
+                    "level": if check.required { "error" } else { "warning" },
+                    "message": {"text": format!("{} failed: {evidence}", check.command)},
+                    "properties": {
+                        "required": check.required,
+                        "cached": check.cached,
+                        "exitCode": check.exit_code,
+                    },
+                })
+            }),
+    );
     serde_json::to_string_pretty(&json!({
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
         "version": "2.1.0",
@@ -168,6 +204,21 @@ pub fn render_sarif(report: &GateReport) -> Result<String, serde_json::Error> {
             "results": results,
         }],
     }))
+}
+
+fn check_rule_id(name: &str) -> String {
+    format!(
+        "FG-CHECK-{}",
+        name.chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() {
+                    character.to_ascii_uppercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+    )
 }
 
 fn sarif_level(severity: Severity) -> &'static str {

@@ -1,0 +1,12 @@
+{
+  "id": "forgeguard",
+  "name": "ForgeGuard",
+  "description": "Runs ForgeGuard context and completion gates.",
+  "activation": {
+    "onCapabilities": ["hook"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false
+  }
+}

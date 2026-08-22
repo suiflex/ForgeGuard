@@ -120,6 +120,180 @@ fn semantic_packs_meet_fixture_precision_and_recall_floor() {
     }
 }
 
+#[test]
+fn security_rules_meet_fixture_precision_and_recall_floor() {
+    let cases = [
+        SecurityCase::positive(
+            "xss-raw",
+            "ts",
+            "function render(input) { element.innerHTML = input; }\n",
+            "FG-SEC-006",
+        ),
+        SecurityCase::negative(
+            "xss-escaped",
+            "ts",
+            "function render(input) { element.innerHTML = escapeHtml(input); }\n",
+            "FG-SEC-006",
+        ),
+        SecurityCase::positive(
+            "path-request",
+            "ts",
+            "import fs from 'fs'; function read() { fs.readFile(req.query.path); }\n",
+            "FG-SEC-007",
+        ),
+        SecurityCase::negative(
+            "path-sanitized-filename",
+            "ts",
+            "import fs from 'fs'; function read() { fs.readFile(sanitizeFilename(req.query.path)); }\n",
+            "FG-SEC-007",
+        ),
+        SecurityCase::positive(
+            "path-basename-is-only-normalization",
+            "ts",
+            "import fs from 'fs'; function read() { fs.readFile(path.basename(req.query.path)); }\n",
+            "FG-SEC-007",
+        ),
+        SecurityCase::positive(
+            "yaml-unsafe",
+            "py",
+            "import yaml\ndef decode(value):\n    return yaml.load(value)\n",
+            "FG-SEC-005",
+        ),
+        SecurityCase::negative(
+            "yaml-safe",
+            "py",
+            "import yaml\ndef decode(value):\n    return yaml.load(value, Loader=yaml.SafeLoader)\n",
+            "FG-SEC-005",
+        ),
+        SecurityCase::positive(
+            "crypto-sha1",
+            "ts",
+            "function hash(value) { return createHash('sha1').update(value); }\n",
+            "FG-SEC-004",
+        ),
+        SecurityCase::negative(
+            "crypto-sha256",
+            "ts",
+            "function hash(value) { return createHash('sha256').update(value); }\n",
+            "FG-SEC-004",
+        ),
+        SecurityCase::positive(
+            "auth-missing",
+            "ts",
+            "app.post('/users', createUser);\n",
+            "FG-AUTH-001",
+        ),
+        SecurityCase::negative(
+            "auth-handler",
+            "ts",
+            "function createUser(req) { policy.check(req.user); save(req.body); }\napp.post('/users', createUser);\n",
+            "FG-AUTH-001",
+        ),
+        SecurityCase::positive(
+            "exception-empty",
+            "ts",
+            "try { work(); } catch (error) {}\n",
+            "FG-ERR-001",
+        ),
+        SecurityCase::negative(
+            "exception-rethrow",
+            "ts",
+            "try { work(); } catch (error) { throw error; }\n",
+            "FG-ERR-001",
+        ),
+    ];
+    let directory = tempdir().expect("temp directory");
+    for case in &cases {
+        fs::write(
+            directory
+                .path()
+                .join(format!("{}.{}", case.name, case.extension)),
+            case.source,
+        )
+        .expect("write security corpus");
+    }
+
+    let findings = scan_project(
+        directory.path(),
+        &ScanConfig::default(),
+        &ScanOptions::default(),
+    )
+    .expect("scan security corpus");
+    let mut true_positives = 0;
+    let mut false_positives = 0;
+    let mut false_negatives = 0;
+    let mut missed = Vec::new();
+    let mut noisy = Vec::new();
+    for case in &cases {
+        let found = findings.iter().any(|finding| {
+            finding.rule_id == case.rule && finding.path.to_string_lossy().starts_with(case.name)
+        });
+        match (case.expected, found) {
+            (true, true) => true_positives += 1,
+            (true, false) => {
+                false_negatives += 1;
+                missed.push(case.name);
+            }
+            (false, true) => {
+                false_positives += 1;
+                noisy.push(case.name);
+            }
+            (false, false) => {}
+        }
+    }
+    let precision = ratio(true_positives, true_positives + false_positives);
+    let recall = ratio(true_positives, true_positives + false_negatives);
+
+    assert!(
+        precision >= 0.95,
+        "security precision {precision:.3}; noisy={noisy:?}"
+    );
+    assert!(
+        recall >= 0.90,
+        "security recall {recall:.3}; missed={missed:?}"
+    );
+}
+
+struct SecurityCase {
+    name: &'static str,
+    extension: &'static str,
+    source: &'static str,
+    rule: &'static str,
+    expected: bool,
+}
+
+impl SecurityCase {
+    const fn positive(
+        name: &'static str,
+        extension: &'static str,
+        source: &'static str,
+        rule: &'static str,
+    ) -> Self {
+        Self {
+            name,
+            extension,
+            source,
+            rule,
+            expected: true,
+        }
+    }
+
+    const fn negative(
+        name: &'static str,
+        extension: &'static str,
+        source: &'static str,
+        rule: &'static str,
+    ) -> Self {
+        Self {
+            name,
+            extension,
+            source,
+            rule,
+            expected: false,
+        }
+    }
+}
+
 struct Cell {
     name: &'static str,
     extension: &'static str,

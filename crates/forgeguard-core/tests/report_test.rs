@@ -44,3 +44,39 @@ for (const id of ids) { prisma.user.findMany({ where: { id } }); }
         true
     );
 }
+
+#[test]
+fn sarif_includes_failed_configured_checks() {
+    let report = forgeguard_core::GateReport {
+        status: forgeguard_core::GateStatus::Blocked,
+        findings: Vec::new(),
+        checks: vec![forgeguard_core::CheckResult {
+            name: "dependency-audit".to_owned(),
+            command: "cargo audit".to_owned(),
+            required: true,
+            success: false,
+            exit_code: Some(1),
+            duration_ms: 25,
+            output: "vulnerable dependency found".to_owned(),
+            cached: true,
+        }],
+        summary: forgeguard_core::model::GateSummary {
+            errors: 0,
+            warnings: 0,
+            info: 0,
+            blocking_findings: 0,
+            findings_baselined: 0,
+            checks_passed: 0,
+            checks_failed: 1,
+        },
+    };
+
+    let sarif: serde_json::Value =
+        serde_json::from_str(&render_sarif(&report).expect("render SARIF")).expect("parse SARIF");
+
+    assert_eq!(
+        sarif["runs"][0]["results"][0]["ruleId"],
+        "FG-CHECK-DEPENDENCY-AUDIT"
+    );
+    assert_eq!(sarif["runs"][0]["results"][0]["properties"]["cached"], true);
+}

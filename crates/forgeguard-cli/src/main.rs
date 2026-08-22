@@ -10,14 +10,13 @@ use clap::{Parser, Subcommand, ValueEnum};
 use forgeguard_core::{
     config::{ForgeGuardConfig, UpdatePolicy, CONFIG_FILE},
     create_baseline_with_config, detect_installed_agents, detect_project, evaluate_context_hook,
-    evaluate_scope_hook, evaluate_stop_hook,
-    git::changed_files,
-    initialize_global, initialize_project, mark_task_ready_with_confidence, render_context_hook,
+    evaluate_scope_hook, evaluate_stop_hook, initialize_global, initialize_project,
+    is_general_hook_invocation, mark_task_ready_with_evidence, render_context_hook,
     render_hook_decision, render_scope_warning,
     report::{render_detection, render_doctor, render_gate, render_gate_compact, render_sarif},
-    run_doctor, run_gate, start_task_with_contract, task_state, update_task_todos, AgentTarget,
-    GateOptions, GateReport, GateStatus, GoalContract, GuardMode, HookAgent, HookDecision,
-    InitOptions, BASELINE_FILE, LANGUAGE_CAPABILITIES, RULES,
+    run_changed_gate, run_doctor, run_gate, start_task_with_profile, task_state, update_task_todos,
+    AgentTarget, GateOptions, GateReport, GateStatus, GoalContract, GuardMode, HookAgent,
+    HookDecision, InitOptions, TaskProfile, BASELINE_FILE, LANGUAGE_CAPABILITIES, RULES,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -70,10 +69,11 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Check or change ForgeGuard mode.
+    /// Check or change Code Guard mode for an initialized repository.
     Mode {
         #[arg(value_enum)]
         mode: Option<ModeArg>,
+        /// Deprecated compatibility flag; Code Guard modes are repository-only.
         #[arg(long)]
         global: bool,
         #[arg(long)]
@@ -99,6 +99,9 @@ enum Commands {
         no_run: bool,
         #[arg(long)]
         changed: bool,
+        /// Compare new code against this Git revision (for example origin/main).
+        #[arg(long, requires = "changed")]
+        base: Option<String>,
     },
     /// Review only changed files with ForgeGuard static rules.
     Review {
@@ -106,6 +109,9 @@ enum Commands {
         json: bool,
         #[arg(long, value_enum, default_value = "full", conflicts_with = "json")]
         output: OutputArg,
+        /// Compare new code against this Git revision (for example origin/main).
+        #[arg(long)]
+        base: Option<String>,
     },
     /// Record current static findings so gates report only new findings.
     Baseline {
@@ -117,7 +123,7 @@ enum Commands {
         #[command(subcommand)]
         command: HookCommands,
     },
-    /// Track a session objective, scope, and evidence for bounded agent work.
+    /// Track a general or code objective, scope, and evidence for bounded agent work.
     Task {
         #[command(subcommand)]
         command: Box<TaskCommands>,
@@ -145,6 +151,9 @@ enum AgentArg {
     Cursor,
     #[value(name = "opencode")]
     OpenCode,
+    Hermes,
+    #[value(name = "openclaw")]
+    OpenClaw,
     Antigravity,
     Windsurf,
     Copilot,
@@ -200,30 +209,47 @@ enum HookCommands {
     Stop {
         #[arg(long, value_enum)]
         agent: HookAgentArg,
+        /// Run only for work outside an initialized Code Guard repository.
+        #[arg(long)]
+        global: bool,
     },
     /// Inject the active objective when a session starts, resumes, or compacts.
     Context {
         #[arg(long, value_enum)]
         agent: HookAgentArg,
+        /// Run only for work outside an initialized Code Guard repository.
+        #[arg(long)]
+        global: bool,
     },
     /// Warn when a file edit falls outside the declared task path prefixes.
     Scope {
         #[arg(long, value_enum)]
         agent: HookAgentArg,
+        /// Run only for work outside an initialized Code Guard repository.
+        #[arg(long)]
+        global: bool,
     },
 }
 
 #[derive(Debug, Subcommand)]
 enum TaskCommands {
-    /// Register the exact objective before a non-trivial code change.
+    /// Register the exact objective before non-trivial general or code work.
     Start {
         #[arg(long)]
         session: String,
         #[arg(long)]
         objective: String,
+        /// Workflow profile. Built-ins include product, qa, security, business-analysis,
+        /// database, architecture, content-creator, and statistics; custom names are allowed.
+        #[arg(long, default_value = "general")]
+        profile: String,
         /// Repository-relative path prefix. Repeat for multiple scopes.
         #[arg(long = "scope")]
         scopes: Vec<String>,
+        /// Non-file resource prefix such as mcp:playwright, url:https://example.com,
+        /// or database:production/analytics. Repeat for multiple resources.
+        #[arg(long = "resource")]
+        resources: Vec<String>,
         /// Ask the host's native goal evaluator to track semantic completion.
         #[arg(long)]
         semantic: bool,
@@ -245,6 +271,9 @@ enum TaskCommands {
         /// Verifiable work item. Repeat for multiple todos.
         #[arg(long = "todo")]
         todos: Vec<String>,
+        /// Verifiable completion criterion. Required for non-general profiles.
+        #[arg(long = "acceptance")]
+        acceptance_criteria: Vec<String>,
         #[arg(long)]
         json: bool,
     },
@@ -255,6 +284,15 @@ enum TaskCommands {
         /// Exact executed check or tool result. Repeat for multiple evidence items.
         #[arg(long = "evidence")]
         evidence: Vec<String>,
+        /// Evidence provenance such as mcp:playwright, command:cargo-test, or human:reviewer.
+        #[arg(long)]
+        source: Option<String>,
+        /// Artifact reference such as artifact:trace.zip. Repeat for multiple artifacts.
+        #[arg(long = "artifact")]
+        artifacts: Vec<String>,
+        /// 1-based acceptance criterion proved by this evidence. Repeat as needed.
+        #[arg(long = "criterion")]
+        criteria: Vec<usize>,
         /// Model-reported confidence; tracked but never replaces evidence or gates.
         #[arg(long)]
         confidence: Option<u8>,
@@ -298,6 +336,8 @@ enum HookAgentArg {
     Claude,
     Cursor,
     Antigravity,
+    #[value(name = "openclaw")]
+    OpenClaw,
 }
 
 fn main() -> ExitCode {
@@ -310,6 +350,7 @@ fn main() -> ExitCode {
     }
 }
 
+// forgeguard: allow FG-CPLX-001 -- central CLI dispatcher; this change only routes hook scope
 fn execute() -> Result<ExitCode> {
     let cli = Cli::parse();
     let root = cli
@@ -391,9 +432,6 @@ fn execute() -> Result<ExitCode> {
                             &report.files_skipped,
                         );
                     }
-                    if io::stdin().is_terminal() {
-                        configure_mode_interactive(&home, true)?;
-                    }
                 }
             } else {
                 let report = initialize_project(&root, &options)?;
@@ -431,7 +469,7 @@ fn execute() -> Result<ExitCode> {
                     }
                     print!("{}", render_detection(&report.detection));
                     if io::stdin().is_terminal() {
-                        configure_mode_interactive(&root, false)?;
+                        configure_mode_interactive(&root)?;
                     }
                 }
             }
@@ -480,16 +518,27 @@ fn execute() -> Result<ExitCode> {
         } => {
             let mut config = ForgeGuardConfig::load(&root)?;
             let previous = config.migrate_to_v2()?;
+            let detected = detect_project(&root)?;
+            let commands_added = config.reconcile_commands(&detected.suggested_commands);
             config.save(&root)?;
             if json {
                 println!(
                     "{}",
-                    serde_json::json!({"previous_version": previous, "version": config.version})
+                    serde_json::json!({
+                        "previous_version": previous,
+                        "version": config.version,
+                        "commands_added": commands_added,
+                    })
                 );
             } else if previous == config.version {
-                println!("ForgeGuard config already at version {}.", config.version);
+                println!(
+                    "ForgeGuard config already at version {}; added {commands_added} new command preset(s).",
+                    config.version
+                );
             } else {
-                println!("ForgeGuard config migrated from version {previous} to 2.");
+                println!(
+                    "ForgeGuard config migrated from version {previous} to 2; added {commands_added} new command preset(s)."
+                );
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -517,6 +566,7 @@ fn execute() -> Result<ExitCode> {
             output,
             no_run,
             changed,
+            base,
         } => {
             let config = ForgeGuardConfig::load(&root).context(
                 "ForgeGuard is not initialized; run `forgeguard init` in the repository first",
@@ -524,38 +574,29 @@ fn execute() -> Result<ExitCode> {
             if !json {
                 maybe_gate_update(&root)?;
             }
-            let paths = if changed {
-                Some(changed_files(&root)?)
+            let report = if changed {
+                run_changed_gate(&root, &config, no_run, base.as_deref())?
             } else {
-                None
+                run_gate(
+                    &root,
+                    &config,
+                    &GateOptions {
+                        skip_commands: no_run,
+                        paths: None,
+                    },
+                )?
             };
-            let report = run_gate(
-                &root,
-                &config,
-                &GateOptions {
-                    skip_commands: no_run,
-                    paths,
-                },
-            )?;
             render_gate_output(&report, json, output)?;
             Ok(exit_code_for_status(report.status))
         }
-        Commands::Review { json, output } => {
+        Commands::Review { json, output, base } => {
             let config = ForgeGuardConfig::load(&root).context(
                 "ForgeGuard is not initialized; run `forgeguard init` in the repository first",
             )?;
             if !json {
                 maybe_gate_update(&root)?;
             }
-            let paths = Some(changed_files(&root)?);
-            let report = run_gate(
-                &root,
-                &config,
-                &GateOptions {
-                    skip_commands: true,
-                    paths,
-                },
-            )?;
+            let report = run_changed_gate(&root, &config, true, base.as_deref())?;
             render_gate_output(&report, json, output)?;
             Ok(exit_code_for_status(report.status))
         }
@@ -586,14 +627,14 @@ fn execute() -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Commands::Hook {
-            command: HookCommands::Stop { agent },
-        } => execute_stop_hook(&root, agent.into()),
+            command: HookCommands::Stop { agent, global },
+        } => execute_stop_hook(&root, agent.into(), global),
         Commands::Hook {
-            command: HookCommands::Context { agent },
-        } => execute_context_hook(&root, agent.into()),
+            command: HookCommands::Context { agent, global },
+        } => execute_context_hook(&root, agent.into(), global),
         Commands::Hook {
-            command: HookCommands::Scope { agent },
-        } => execute_scope_hook(&root, agent.into()),
+            command: HookCommands::Scope { agent, global },
+        } => execute_scope_hook(&root, agent.into(), global),
         Commands::Task { command } => execute_task(&root, *command),
         Commands::Update { mode, global, json } => execute_update(&root, mode, global, json),
     }
@@ -641,57 +682,52 @@ fn execute_update(
 }
 
 fn execute_mode(root: &Path, mode: Option<ModeArg>, global: bool, json: bool) -> Result<ExitCode> {
-    let target = if global {
-        home_directory()?
-    } else {
-        root.to_path_buf()
-    };
-    let mut config = load_or_create_config(&target, global)?;
+    if global {
+        bail!(
+            "`forgeguard mode --global` is no longer supported; lite/default/strict apply only to Code Guard repositories. Run `forgeguard mode <mode>` inside an initialized repository"
+        );
+    }
+    if !root.join(CONFIG_FILE).is_file() {
+        bail!("Code Guard mode requires an initialized repository; run `forgeguard init` first");
+    }
+    let mut config = ForgeGuardConfig::load(root)?;
     let selected = match mode {
         Some(mode) => mode.into(),
         None if io::stdin().is_terminal() && !json => prompt_for_mode(config.mode)?,
         None => config.mode,
     };
     config.mode = selected;
-    save_config(&target, global, &config)?;
+    config.save(root)?;
 
     if json {
         println!(
             "{}",
             serde_json::json!({
-                "scope": if global { "global" } else { "project" },
+                "scope": "project",
                 "mode": config.mode.as_str(),
             })
         );
     } else {
-        println!(
-            "ForgeGuard {} mode set to {}.",
-            if global { "global" } else { "project" },
-            config.mode.as_str()
-        );
+        println!("ForgeGuard project mode set to {}.", config.mode.as_str());
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn configure_mode_interactive(target: &Path, global: bool) -> Result<()> {
-    let mut config = load_or_create_config(target, global)?;
+fn configure_mode_interactive(target: &Path) -> Result<()> {
+    let mut config = ForgeGuardConfig::load(target)?;
     println!();
     let mode = prompt_for_mode(config.mode)?;
     config.mode = mode;
-    save_config(target, global, &config)?;
-    println!(
-        "ForgeGuard {} mode set to {}.",
-        if global { "global" } else { "project" },
-        config.mode.as_str()
-    );
+    config.save(target)?;
+    println!("ForgeGuard project mode set to {}.", config.mode.as_str());
     Ok(())
 }
 
 fn prompt_for_mode(default: GuardMode) -> Result<GuardMode> {
-    println!("ForgeGuard mode");
+    println!("Code Guard mode");
     println!("  1) default - token-friendly; report static findings, block only failed required commands");
-    println!("  2) lite    - report-only; never blocks");
-    println!("  3) strict  - block failed required commands and error-level findings");
+    println!("  2) lite    - static report-only; required command failures still block");
+    println!("  3) strict  - block failed required commands and warning/error findings");
     print!("Choose mode [{}]: ", default.as_str());
     io::stdout().flush()?;
 
@@ -742,11 +778,14 @@ fn save_config(target: &Path, global: bool, config: &ForgeGuardConfig) -> Result
     }
 }
 
-fn execute_stop_hook(root: &Path, agent: HookAgent) -> Result<ExitCode> {
+fn execute_stop_hook(root: &Path, agent: HookAgent, global: bool) -> Result<ExitCode> {
     let mut input = String::new();
     io::stdin()
         .read_to_string(&mut input)
         .context("failed to read hook input")?;
+    if global && !is_general_hook_invocation(root, &input)? {
+        return Ok(ExitCode::SUCCESS);
+    }
     let home = home_directory().ok();
     if let Some(home) = &home {
         forgeguard_core::update::spawn_refresh_if_stale(home);
@@ -777,22 +816,28 @@ fn execute_stop_hook(root: &Path, agent: HookAgent) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn execute_context_hook(root: &Path, agent: HookAgent) -> Result<ExitCode> {
+fn execute_context_hook(root: &Path, agent: HookAgent, global: bool) -> Result<ExitCode> {
     let mut input = String::new();
     io::stdin()
         .read_to_string(&mut input)
         .context("failed to read hook input")?;
+    if global && !is_general_hook_invocation(root, &input)? {
+        return Ok(ExitCode::SUCCESS);
+    }
     if let Some(context) = evaluate_context_hook(root, &input, agent)? {
         println!("{}", render_context_hook(agent, &input, &context));
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn execute_scope_hook(root: &Path, agent: HookAgent) -> Result<ExitCode> {
+fn execute_scope_hook(root: &Path, agent: HookAgent, global: bool) -> Result<ExitCode> {
     let mut input = String::new();
     io::stdin()
         .read_to_string(&mut input)
         .context("failed to read hook input")?;
+    if global && !is_general_hook_invocation(root, &input)? {
+        return Ok(ExitCode::SUCCESS);
+    }
     if let Some(warning) = evaluate_scope_hook(root, &input)? {
         println!("{}", render_scope_warning(agent, &warning));
     }
@@ -804,7 +849,9 @@ fn execute_task(root: &Path, command: TaskCommands) -> Result<ExitCode> {
         TaskCommands::Start {
             session,
             objective,
+            profile,
             scopes,
+            resources,
             semantic,
             metric,
             baseline,
@@ -812,13 +859,15 @@ fn execute_task(root: &Path, command: TaskCommands) -> Result<ExitCode> {
             guardrails,
             verifications,
             todos,
+            acceptance_criteria,
             json,
         } => (
-            start_task_with_contract(
+            start_task_with_profile(
                 root,
                 &session,
                 &objective,
                 &scopes,
+                &resources,
                 semantic,
                 GoalContract {
                     metric,
@@ -828,16 +877,29 @@ fn execute_task(root: &Path, command: TaskCommands) -> Result<ExitCode> {
                     verifications,
                 },
                 &todos,
+                TaskProfile::new(&profile)?,
+                &acceptance_criteria,
             )?,
             json,
         ),
         TaskCommands::Ready {
             session,
             evidence,
+            source,
+            artifacts,
+            criteria,
             confidence,
             json,
         } => (
-            mark_task_ready_with_confidence(root, &session, &evidence, confidence)?,
+            mark_task_ready_with_evidence(
+                root,
+                &session,
+                &evidence,
+                confidence,
+                source.as_deref(),
+                &artifacts,
+                &criteria,
+            )?,
             json,
         ),
         TaskCommands::Todo {
@@ -955,6 +1017,8 @@ impl From<AgentArg> for AgentTarget {
             AgentArg::Claude => Self::Claude,
             AgentArg::Cursor => Self::Cursor,
             AgentArg::OpenCode => Self::OpenCode,
+            AgentArg::Hermes => Self::Hermes,
+            AgentArg::OpenClaw => Self::OpenClaw,
             AgentArg::Antigravity => Self::Antigravity,
             AgentArg::Windsurf => Self::Windsurf,
             AgentArg::Copilot => Self::Copilot,
@@ -982,6 +1046,7 @@ impl From<HookAgentArg> for HookAgent {
             HookAgentArg::Claude => Self::Claude,
             HookAgentArg::Cursor => Self::Cursor,
             HookAgentArg::Antigravity => Self::Antigravity,
+            HookAgentArg::OpenClaw => Self::OpenClaw,
         }
     }
 }
@@ -993,6 +1058,8 @@ const AGENT_MENU: &[(&str, AgentTarget)] = &[
     ("claude", AgentTarget::Claude),
     ("cursor", AgentTarget::Cursor),
     ("opencode", AgentTarget::OpenCode),
+    ("hermes", AgentTarget::Hermes),
+    ("openclaw", AgentTarget::OpenClaw),
     ("antigravity", AgentTarget::Antigravity),
     ("windsurf", AgentTarget::Windsurf),
     ("copilot", AgentTarget::Copilot),
@@ -1007,6 +1074,8 @@ const AGENT_SUMMARY: &[(&str, &str)] = &[
     ("claude", "CLAUDE.md, own skill, Stop hook"),
     ("cursor", ".cursor/rules, shared skill, stop hook"),
     ("opencode", "AGENTS.md, shared skill"),
+    ("hermes", "AGENTS.md, native skill"),
+    ("openclaw", "AGENTS.md, native skill"),
     ("antigravity", ".agents/rules, shared skill, Stop hook"),
     ("windsurf", "AGENTS.md only"),
     ("copilot", "AGENTS.md only"),
@@ -1502,18 +1571,101 @@ fn render_init_result(agents: &[AgentTarget], written: &[String], skipped: &[Str
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs, process,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
     use clap::Parser;
+    use forgeguard_core::{config::ForgeGuardConfig, GuardMode};
 
     use super::{
-        agent_menu_rows, agents_from_names, agents_from_rows, summarize_paths, AgentTarget,
-        BaselineCommands, Cli, Commands, ConfigCommands, OutputArg,
+        agent_menu_rows, agents_from_names, agents_from_rows, execute_mode, summarize_paths,
+        AgentTarget, BaselineCommands, Cli, Commands, ConfigCommands, HookCommands, ModeArg,
+        OutputArg,
     };
+
+    fn temporary_project(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "forgeguard-{label}-{}-{}",
+            process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should follow the Unix epoch")
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn code_guard_mode_requires_an_initialized_repository() {
+        let root = temporary_project("uninitialized-mode");
+        fs::create_dir_all(&root).expect("temporary directory should be created");
+
+        let error = execute_mode(&root, Some(ModeArg::Strict), false, true)
+            .expect_err("an uninitialized repository must be rejected");
+
+        assert!(error.to_string().contains("run `forgeguard init` first"));
+        fs::remove_dir_all(root).expect("temporary directory should be removed");
+    }
+
+    #[test]
+    fn code_guard_mode_is_saved_only_in_the_repository() {
+        let root = temporary_project("repository-mode");
+        fs::create_dir_all(&root).expect("temporary directory should be created");
+        ForgeGuardConfig::new("mode-test", vec![])
+            .save(&root)
+            .expect("project config should be created");
+
+        execute_mode(&root, Some(ModeArg::Strict), false, true)
+            .expect("repository mode should be updated");
+
+        assert_eq!(
+            ForgeGuardConfig::load(&root)
+                .expect("project config should load")
+                .mode,
+            GuardMode::Strict
+        );
+        fs::remove_dir_all(root).expect("temporary directory should be removed");
+    }
+
+    #[test]
+    fn legacy_global_mode_flag_is_parseable_but_rejected() {
+        let cli = Cli::try_parse_from(["forgeguard", "mode", "strict", "--global"])
+            .expect("legacy command shape should remain parseable");
+        assert!(matches!(cli.command, Commands::Mode { global: true, .. }));
+
+        let error = execute_mode(std::path::Path::new("."), Some(ModeArg::Strict), true, true)
+            .expect_err("global Code Guard mode must be rejected");
+        assert!(error.to_string().contains("Code Guard repositories"));
+    }
+
+    #[test]
+    fn global_lifecycle_hook_scope_is_parseable() {
+        for action in ["stop", "context", "scope"] {
+            let cli =
+                Cli::try_parse_from(["forgeguard", "hook", action, "--agent", "codex", "--global"])
+                    .expect("global hook command should parse");
+            assert!(matches!(
+                cli.command,
+                Commands::Hook {
+                    command: HookCommands::Stop { global: true, .. }
+                        | HookCommands::Context { global: true, .. }
+                        | HookCommands::Scope { global: true, .. }
+                }
+            ));
+        }
+    }
 
     #[test]
     fn maps_checked_names_in_menu_order() {
         assert_eq!(
-            agents_from_names(&["cursor", "codex"]),
-            vec![AgentTarget::Codex, AgentTarget::Cursor]
+            agents_from_names(&["openclaw", "cursor", "codex", "hermes"]),
+            vec![
+                AgentTarget::Codex,
+                AgentTarget::Cursor,
+                AgentTarget::Hermes,
+                AgentTarget::OpenClaw,
+            ]
         );
     }
 
@@ -1549,7 +1701,7 @@ mod tests {
     #[test]
     fn menu_rows_round_trip_back_to_targets() {
         let rows = agent_menu_rows();
-        let picked = vec![rows[1].clone(), rows[6].clone()];
+        let picked = vec![rows[1].clone(), rows[8].clone()];
 
         assert_eq!(
             agents_from_rows(&picked),
@@ -1621,5 +1773,53 @@ mod tests {
                 ..
             }
         ));
+
+        let review = Cli::try_parse_from(["forgeguard", "review", "--base", "origin/main"])
+            .expect("parse base review");
+        assert!(matches!(
+            review.command,
+            Commands::Review {
+                base: Some(ref base),
+                ..
+            } if base == "origin/main"
+        ));
+    }
+
+    #[test]
+    fn parses_cross_role_task_contract_and_evidence() {
+        let start = Cli::try_parse_from([
+            "forgeguard",
+            "task",
+            "start",
+            "--session",
+            "qa-session",
+            "--objective",
+            "Verify checkout",
+            "--profile",
+            "qa",
+            "--resource",
+            "mcp:playwright",
+            "--acceptance",
+            "guest checkout succeeds",
+        ])
+        .expect("parse role task");
+        assert!(matches!(start.command, Commands::Task { .. }));
+
+        Cli::try_parse_from([
+            "forgeguard",
+            "task",
+            "ready",
+            "--session",
+            "qa-session",
+            "--evidence",
+            "trace captured",
+            "--source",
+            "mcp:playwright",
+            "--artifact",
+            "artifact:trace.zip",
+            "--criterion",
+            "1",
+        ])
+        .expect("parse structured evidence");
     }
 }

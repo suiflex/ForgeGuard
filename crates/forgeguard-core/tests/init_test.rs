@@ -54,6 +54,15 @@ fn installs_configuration_for_all_supported_agents() {
         .path()
         .join(".agents/skills/forgeguard-engineering/SKILL.md")
         .exists());
+    let engineering_skill = fs::read_to_string(
+        directory
+            .path()
+            .join(".agents/skills/forgeguard-engineering/SKILL.md"),
+    )
+    .expect("read engineering skill");
+    assert!(engineering_skill.contains("## Reject AI slop"));
+    assert!(engineering_skill.contains("Do not invent requirements, APIs, schemas"));
+    assert!(engineering_skill.contains("Do not disguise incomplete work with placeholders"));
     assert!(directory
         .path()
         .join(".agents/skills/forgeguard-engineering/agents/openai.yaml")
@@ -126,6 +135,55 @@ fn installs_configuration_for_all_supported_agents() {
 }
 
 #[test]
+fn reinitialization_adds_new_presets_without_overwriting_existing_commands() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("Cargo.toml"),
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write manifest");
+    let mut config = ForgeGuardConfig::new(
+        "sample",
+        vec![forgeguard_core::CommandConfig {
+            name: "test".to_owned(),
+            command: "custom-test".to_owned(),
+            required: true,
+            enabled: true,
+            timeout_seconds: 30,
+        }],
+    );
+    config.version = 1;
+    config.save(directory.path()).expect("save legacy config");
+
+    let report = initialize_project(
+        directory.path(),
+        &InitOptions {
+            agents: vec![AgentTarget::Codex],
+            ..InitOptions::default()
+        },
+    )
+    .expect("reinitialize project");
+    let upgraded = ForgeGuardConfig::load(directory.path()).expect("load reconciled config");
+
+    assert_eq!(upgraded.version, 1, "init must not change gate semantics");
+    assert_eq!(
+        upgraded
+            .commands
+            .iter()
+            .find(|command| command.name == "test")
+            .map(|command| command.command.as_str()),
+        Some("custom-test")
+    );
+    assert!(upgraded
+        .commands
+        .iter()
+        .any(|command| command.name == "dependency-audit" && !command.enabled));
+    assert!(report
+        .files_written
+        .contains(&".forgeguard/config.toml".to_owned()));
+}
+
+#[test]
 fn project_init_appends_installed_agent_directories_to_existing_gitignore() {
     let directory = tempdir().expect("temp directory");
     fs::write(directory.path().join(".gitignore"), "target/\n/.codex/\n").expect("write gitignore");
@@ -167,7 +225,7 @@ fn project_init_ignores_only_directories_for_selected_agents() {
 }
 
 #[test]
-fn installs_global_skills_without_project_configuration() {
+fn installs_global_general_guard_configuration_and_skills() {
     let directory = tempdir().expect("temp directory");
 
     let report = forgeguard_core::initialize_global(
@@ -202,6 +260,35 @@ fn installs_global_skills_without_project_configuration() {
         .path()
         .join(".config/opencode/skills/forgeguard-engineering/SKILL.md")
         .exists());
+    assert!(directory
+        .path()
+        .join(".config/opencode/skills/forgeguard-engineering/references/general-work.md")
+        .exists());
+    assert!(directory
+        .path()
+        .join(".hermes/skills/forgeguard-engineering/SKILL.md")
+        .exists());
+    assert!(directory
+        .path()
+        .join(".openclaw/skills/forgeguard-engineering/SKILL.md")
+        .exists());
+    assert!(directory
+        .path()
+        .join(".openclaw/extensions/forgeguard/openclaw.plugin.json")
+        .exists());
+    let openclaw_config: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(directory.path().join(".openclaw/openclaw.json"))
+            .expect("read OpenClaw config"),
+    )
+    .expect("parse OpenClaw config");
+    assert_eq!(
+        openclaw_config["plugins"]["entries"]["forgeguard"]["enabled"],
+        true
+    );
+    assert_eq!(
+        openclaw_config["plugins"]["entries"]["forgeguard"]["hooks"]["allowConversationAccess"],
+        true
+    );
     assert!(directory.path().join(".gemini/GEMINI.md").exists());
     assert!(directory
         .path()
@@ -211,8 +298,58 @@ fn installs_global_skills_without_project_configuration() {
     // publishes no user-level hook file, so a global install writes neither.
     assert!(!directory.path().join(".gemini/config").exists());
     assert!(!directory.path().join(".gemini/hooks.json").exists());
-    assert!(!directory.path().join(".forgeguard/config.toml").exists());
+    let config = ForgeGuardConfig::load_global(directory.path()).expect("load global config");
+    assert_eq!(config.project.name, "global");
+    assert_eq!(config.focus, forgeguard_core::FocusConfig::default());
     assert!(!report.files_written.is_empty());
+}
+
+#[test]
+fn global_install_replaces_duplicate_legacy_hooks_and_preserves_other_hooks() {
+    let directory = tempdir().expect("temp directory");
+    let codex_hooks = directory.path().join(".codex/hooks.json");
+    fs::create_dir_all(codex_hooks.parent().expect("Codex parent")).expect("create Codex config");
+    fs::write(
+        &codex_hooks,
+        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"if git rev-parse --is-inside-work-tree; then forgeguard hook stop --agent codex; fi"}]},{"hooks":[{"type":"command","command":"forgeguard hook stop --agent codex"}]},{"hooks":[{"type":"command","command":"paseo hooks codex Stop"}]}]}}"#,
+    )
+    .expect("seed Codex hooks");
+    let cursor_hooks = directory.path().join(".cursor/hooks.json");
+    fs::create_dir_all(cursor_hooks.parent().expect("Cursor parent"))
+        .expect("create Cursor config");
+    fs::write(
+        &cursor_hooks,
+        r#"{"version":1,"hooks":{"stop":[{"command":"forgeguard hook stop --agent cursor"},{"command":"forgeguard hook stop --agent cursor --legacy"},{"command":"custom cursor hook"}]}}"#,
+    )
+    .expect("seed Cursor hooks");
+
+    forgeguard_core::initialize_global(
+        directory.path(),
+        &InitOptions {
+            force: false,
+            refresh: false,
+            agents: vec![AgentTarget::Codex, AgentTarget::Cursor],
+        },
+    )
+    .expect("refresh global hooks");
+
+    let codex = fs::read_to_string(codex_hooks).expect("read Codex hooks");
+    assert_eq!(
+        codex.matches("forgeguard hook stop --agent codex").count(),
+        1
+    );
+    assert!(codex.contains("forgeguard hook stop --agent codex --global"));
+    assert!(codex.contains("paseo hooks codex Stop"));
+
+    let cursor = fs::read_to_string(cursor_hooks).expect("read Cursor hooks");
+    assert_eq!(
+        cursor
+            .matches("forgeguard hook stop --agent cursor")
+            .count(),
+        1
+    );
+    assert!(cursor.contains("forgeguard hook stop --agent cursor --global"));
+    assert!(cursor.contains("custom cursor hook"));
 }
 
 #[test]
@@ -569,6 +706,8 @@ fn detects_only_agents_with_configuration_present() {
 
     fs::create_dir_all(directory.path().join(".claude")).expect("create .claude");
     fs::create_dir_all(directory.path().join(".roo/rules")).expect("create .roo/rules");
+    fs::create_dir_all(directory.path().join(".hermes")).expect("create .hermes");
+    fs::create_dir_all(directory.path().join(".openclaw")).expect("create .openclaw");
     fs::create_dir_all(directory.path().join(".github")).expect("create .github");
     fs::write(
         directory.path().join(".github/copilot-instructions.md"),
@@ -580,8 +719,68 @@ fn detects_only_agents_with_configuration_present() {
 
     assert_eq!(
         detected,
-        vec![AgentTarget::Claude, AgentTarget::Copilot, AgentTarget::Roo]
+        vec![
+            AgentTarget::Claude,
+            AgentTarget::Hermes,
+            AgentTarget::OpenClaw,
+            AgentTarget::Copilot,
+            AgentTarget::Roo,
+        ]
     );
+}
+
+#[test]
+fn global_hermes_and_openclaw_use_their_native_skill_directories() {
+    let directory = tempdir().expect("temp directory");
+    fs::create_dir_all(directory.path().join(".openclaw")).expect("create OpenClaw home");
+    fs::write(
+        directory.path().join(".openclaw/openclaw.json"),
+        r#"{"plugins":{"allow":["existing"],"entries":{"forgeguard":{"hooks":{"timeoutMs":1234}}}},"custom":true}"#,
+    )
+    .expect("seed OpenClaw config");
+
+    let report = forgeguard_core::initialize_global(
+        directory.path(),
+        &InitOptions {
+            force: false,
+            refresh: false,
+            agents: vec![AgentTarget::Hermes, AgentTarget::OpenClaw],
+        },
+    )
+    .expect("install global skills");
+
+    assert_eq!(
+        report.agents,
+        vec![AgentTarget::Hermes, AgentTarget::OpenClaw]
+    );
+    assert!(directory
+        .path()
+        .join(".hermes/skills/forgeguard-engineering/SKILL.md")
+        .is_file());
+    assert!(directory
+        .path()
+        .join(".openclaw/skills/forgeguard-engineering/SKILL.md")
+        .is_file());
+    assert!(directory
+        .path()
+        .join(".openclaw/extensions/forgeguard/index.js")
+        .is_file());
+    let config: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(directory.path().join(".openclaw/openclaw.json"))
+            .expect("read merged OpenClaw config"),
+    )
+    .expect("parse merged OpenClaw config");
+    assert_eq!(config["custom"], true);
+    assert_eq!(
+        config["plugins"]["allow"],
+        serde_json::json!(["existing", "forgeguard"])
+    );
+    assert_eq!(
+        config["plugins"]["entries"]["forgeguard"]["hooks"]["timeoutMs"],
+        1234
+    );
+    assert_eq!(config["plugins"]["entries"]["forgeguard"]["enabled"], true);
+    assert!(!directory.path().join("AGENTS.md").exists());
 }
 
 #[test]

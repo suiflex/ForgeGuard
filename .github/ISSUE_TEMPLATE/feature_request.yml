@@ -21,3 +21,16 @@ body:
     attributes:
       label: Alternatives considered
       description: Include workarounds or other approaches you considered.
+  - type: textarea
+    id: verification
+    attributes:
+      label: Success evidence
+      description: What exact test, artifact, or observable result would prove this solved the problem?
+    validations:
+      required: true
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I am willing to help implement or verify a focused version of this request.

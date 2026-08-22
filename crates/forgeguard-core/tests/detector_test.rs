@@ -20,6 +20,12 @@ fn detects_rust_workspace_commands() {
         .suggested_commands
         .iter()
         .any(|command| command.command == "cargo test --workspace"));
+    assert!(detection.suggested_commands.iter().any(|command| {
+        command.name == "dependency-audit"
+            && command.command == "cargo audit --deny warnings"
+            && !command.enabled
+            && command.required
+    }));
 }
 
 #[test]
@@ -61,6 +67,95 @@ fn detects_node_frameworks_and_scripts() {
         .suggested_commands
         .iter()
         .any(|command| command.command == "pnpm lint"));
+    assert!(detection
+        .suggested_commands
+        .iter()
+        .any(|command| command.name == "dependency-audit" && !command.enabled));
+}
+
+#[test]
+fn detects_go_vet_as_the_native_static_analyzer() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("go.mod"),
+        "module example.test/sample\n",
+    )
+    .expect("write go.mod");
+
+    let detection = detect_project(directory.path()).expect("detect project");
+
+    assert!(detection
+        .suggested_commands
+        .iter()
+        .any(|command| command.command == "go vet ./..." && command.enabled));
+}
+
+#[test]
+fn detected_enterprise_dependency_audits_are_blocking_when_enabled() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(directory.path().join("pom.xml"), "<project/>\n").expect("write Maven manifest");
+    fs::write(
+        directory.path().join("sample.csproj"),
+        "<Project Sdk=\"Microsoft.NET.Sdk\"/>\n",
+    )
+    .expect("write .NET project");
+
+    let detection = detect_project(directory.path()).expect("detect project");
+    for expected in [
+        "mvn org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=0",
+        "dotnet restore -p:NuGetAudit=true -p:NuGetAuditMode=all -p:WarningsAsErrors=\"NU1901;NU1902;NU1903;NU1904\"",
+    ] {
+        let command = detection
+            .suggested_commands
+            .iter()
+            .find(|command| command.command == expected)
+            .unwrap_or_else(|| panic!("missing {expected}"));
+        assert!(command.required && !command.enabled);
+    }
+}
+
+#[test]
+fn preserves_quality_and_supply_chain_commands_in_polyglot_repositories() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("Cargo.toml"),
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write Cargo manifest");
+    fs::write(
+        directory.path().join("go.mod"),
+        "module example.test/sample\n",
+    )
+    .expect("write Go manifest");
+    fs::write(
+        directory.path().join("pnpm-lock.yaml"),
+        "lockfileVersion: 9\n",
+    )
+    .expect("write pnpm lockfile");
+    fs::write(
+        directory.path().join("package.json"),
+        r#"{"scripts":{"lint":"eslint .","test":"vitest run"}}"#,
+    )
+    .expect("write package manifest");
+
+    let detection = detect_project(directory.path()).expect("detect project");
+    for command in [
+        "cargo test --workspace",
+        "go test ./...",
+        "pnpm test",
+        "cargo audit --deny warnings",
+        "govulncheck ./...",
+        "pnpm audit",
+    ] {
+        assert!(
+            detection
+                .suggested_commands
+                .iter()
+                .any(|detected| detected.command == command),
+            "missing {command}: {:#?}",
+            detection.suggested_commands
+        );
+    }
 }
 
 #[test]

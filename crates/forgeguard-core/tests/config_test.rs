@@ -138,6 +138,39 @@ fn migration_to_v2_preserves_commands_focus_and_mode() {
 }
 
 #[test]
+fn command_reconciliation_appends_missing_presets_without_overwriting_user_edits() {
+    let custom = CommandConfig {
+        name: "test".to_owned(),
+        command: "custom-test --fast".to_owned(),
+        required: false,
+        enabled: true,
+        timeout_seconds: 12,
+    };
+    let mut config = ForgeGuardConfig::new("upgrade", vec![custom.clone()]);
+    let detected = [
+        CommandConfig {
+            name: "test".to_owned(),
+            command: "cargo test".to_owned(),
+            required: true,
+            enabled: true,
+            timeout_seconds: 600,
+        },
+        CommandConfig {
+            name: "dependency-audit".to_owned(),
+            command: "cargo audit".to_owned(),
+            required: false,
+            enabled: false,
+            timeout_seconds: 600,
+        },
+    ];
+
+    assert_eq!(config.reconcile_commands(&detected), 1);
+    assert_eq!(config.commands[0], custom);
+    assert_eq!(config.commands[1].name, "dependency-audit");
+    assert_eq!(config.reconcile_commands(&detected), 0);
+}
+
+#[test]
 fn unsupported_config_version_fails_closed() {
     let directory = tempdir().expect("temp directory");
     fs::create_dir_all(directory.path().join(".forgeguard")).expect("create config dir");
@@ -153,4 +186,23 @@ name = "future"
 
     let error = ForgeGuardConfig::load(directory.path()).expect_err("reject unknown version");
     assert!(error.to_string().contains("unsupported config version 99"));
+}
+
+#[test]
+fn changed_coverage_policy_requires_a_valid_report_configuration() {
+    let directory = tempdir().expect("temp directory");
+    fs::create_dir_all(directory.path().join(".forgeguard")).expect("create config dir");
+    fs::write(
+        directory.path().join(".forgeguard/config.toml"),
+        r#"version = 2
+[project]
+name = "coverage"
+[scan]
+min_changed_coverage = 101
+"#,
+    )
+    .expect("write config");
+
+    let error = ForgeGuardConfig::load(directory.path()).expect_err("reject invalid threshold");
+    assert!(error.to_string().contains("between 0 and 100"));
 }

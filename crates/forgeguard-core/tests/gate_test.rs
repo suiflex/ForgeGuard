@@ -1,7 +1,8 @@
-use std::fs;
+use std::{fs, process::Command};
 
 use forgeguard_core::{
-    config::RuleConfig, run_gate, ForgeGuardConfig, GateOptions, GateStatus, GuardMode, Severity,
+    config::RuleConfig, run_changed_gate, run_gate, ForgeGuardConfig, GateOptions, GateStatus,
+    GuardMode, Severity,
 };
 use tempfile::tempdir;
 
@@ -195,4 +196,88 @@ fn per_rule_policy_can_disable_override_and_block() {
     .expect("run disabled gate");
     assert_eq!(report.status, GateStatus::Passed);
     assert!(report.findings.is_empty());
+}
+
+#[test]
+fn changed_gate_ignores_old_findings_and_enforces_lcov_on_new_lines() {
+    let directory = tempdir().expect("temp directory");
+    git(directory.path(), &["init", "--quiet"]);
+    git(
+        directory.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git(
+        directory.path(),
+        &["config", "user.name", "ForgeGuard Test"],
+    );
+    fs::write(
+        directory.path().join("app.ts"),
+        "for (const row of rows) { for (const value of row) console.log(value); }\nexport const value = 1;\n",
+    )
+    .expect("write base source");
+    git(directory.path(), &["add", "app.ts"]);
+    git(directory.path(), &["commit", "--quiet", "-m", "base"]);
+    fs::write(
+        directory.path().join("app.ts"),
+        "for (const row of rows) { for (const value of row) console.log(value); }\nexport const value = 2;\nexport const next = 3;\n",
+    )
+    .expect("change source");
+    fs::write(
+        directory.path().join("lcov.info"),
+        "TN:\nSF:app.ts\nDA:1,0\nDA:2,1\nDA:3,0\nend_of_record\n",
+    )
+    .expect("write coverage");
+    let mut config = ForgeGuardConfig::new("sample", Vec::new());
+    config.mode = GuardMode::Strict;
+    config.scan.coverage_report = Some("lcov.info".into());
+    config.scan.min_changed_coverage = Some(80);
+
+    let report = run_changed_gate(directory.path(), &config, true, None).expect("changed gate");
+
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-COV-001"));
+    assert!(!report
+        .findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-ALG-001"));
+    assert_eq!(report.status, GateStatus::Blocked);
+}
+
+#[test]
+fn changed_coverage_policy_ignores_documentation_only_changes() {
+    let directory = tempdir().expect("temp directory");
+    git(directory.path(), &["init", "--quiet"]);
+    git(
+        directory.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git(
+        directory.path(),
+        &["config", "user.name", "ForgeGuard Test"],
+    );
+    fs::write(directory.path().join("README.md"), "before\n").expect("write readme");
+    git(directory.path(), &["add", "README.md"]);
+    git(directory.path(), &["commit", "--quiet", "-m", "base"]);
+    fs::write(directory.path().join("README.md"), "after\n").expect("change readme");
+    let mut config = ForgeGuardConfig::new("sample", Vec::new());
+    config.scan.coverage_report = Some("missing-lcov.info".into());
+    config.scan.min_changed_coverage = Some(80);
+
+    let report = run_changed_gate(directory.path(), &config, true, None).expect("changed gate");
+
+    assert!(!report
+        .findings
+        .iter()
+        .any(|finding| finding.rule_id == "FG-COV-001"));
+}
+
+fn git(root: &std::path::Path, args: &[&str]) {
+    assert!(Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .status()
+        .expect("run git")
+        .success());
 }

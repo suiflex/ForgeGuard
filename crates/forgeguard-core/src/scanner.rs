@@ -12,6 +12,7 @@ use tree_sitter::{Language, Node, Parser};
 use crate::{
     config::ScanConfig,
     duplication::scan_duplicate_blocks,
+    git::ChangedScope,
     model::{EvidenceConfidence, Finding, Severity},
     rules,
 };
@@ -22,10 +23,139 @@ pub struct ScanOptions {
     pub paths: Option<Vec<std::path::PathBuf>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExecutablePlaceholder {
+    pub kind: &'static str,
+    pub line: usize,
+    pub evidence: String,
+    pub fingerprint: String,
+}
+
+pub(crate) fn executable_placeholders(
+    path: &Path,
+    source: &str,
+) -> Result<Vec<ExecutablePlaceholder>> {
+    if is_test_path(path) {
+        return Ok(Vec::new());
+    }
+    let analyzer = Analyzer::new()?;
+    let component = analyzer.extract_component_script(path, source);
+    let (profile, source) = match component.as_ref() {
+        Some((profile, masked)) => (*profile, masked.as_str()),
+        None => match LanguageProfile::from_path(path) {
+            Some(profile) => (profile, source),
+            None => return Ok(Vec::new()),
+        },
+    };
+    let mut parser = Parser::new();
+    if parser.set_language(&profile.language()).is_err() {
+        return Ok(Vec::new());
+    }
+    let Some(tree) = parser
+        .parse(source, None)
+        .filter(|tree| !tree.root_node().has_error())
+    else {
+        return Ok(Vec::new());
+    };
+    let mut placeholders = Vec::new();
+    let mut stack = vec![tree.root_node()];
+    while let Some(node) = stack.pop() {
+        let fingerprint = compact_code(node_text(node, source));
+        if let Some(kind) = executable_placeholder_kind(node, source, &fingerprint) {
+            placeholders.push(ExecutablePlaceholder {
+                kind,
+                line: node.start_position().row + 1,
+                evidence: truncate(node_text(node, source), 240),
+                fingerprint,
+            });
+        }
+        stack.extend(
+            (0..node.named_child_count()).filter_map(|index| node.named_child(index as u32)),
+        );
+    }
+    Ok(placeholders)
+}
+
+fn compact_code(source: &str) -> String {
+    source
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn executable_placeholder_kind(
+    node: Node<'_>,
+    source: &str,
+    compact: &str,
+) -> Option<&'static str> {
+    let placeholder_message = compact.contains("notimplemented") || compact.contains("todo");
+    if node.kind() == "macro_invocation" {
+        if compact.starts_with("todo!(") {
+            return Some("todo!");
+        }
+        if compact.starts_with("unimplemented!(") {
+            return Some("unimplemented!");
+        }
+        if compact.starts_with("panic!(") && placeholder_message {
+            return Some("not implemented");
+        }
+    }
+    if let Some(callee) = call_name(node, source) {
+        return match terminal_name(callee).to_ascii_lowercase().as_str() {
+            "todo" => Some("TODO"),
+            "unimplemented" => Some("unimplemented"),
+            "notimplementederror" => Some("NotImplementedError"),
+            "notimplementedexception" => Some("NotImplementedException"),
+            "unimplementederror" => Some("UnimplementedError"),
+            "error" | "fatalerror" | "panic" if placeholder_message => Some("not implemented"),
+            _ => None,
+        };
+    }
+    if node.kind() == "new_expression"
+        && placeholder_message
+        && (compact.contains("error(") || compact.contains("exception("))
+    {
+        return Some("not implemented");
+    }
+    matches!(node.kind(), "raise_statement" | "throw_statement")
+        .then_some(compact)
+        .filter(|statement| {
+            statement.contains("notimplementederror")
+                || statement.contains("notimplementedexception")
+                || statement.contains("unimplementederror")
+        })
+        .map(|_| "not implemented")
+}
+
 pub fn scan_project(
     root: &Path,
     config: &ScanConfig,
     options: &ScanOptions,
+) -> Result<Vec<Finding>> {
+    scan_project_inner(root, config, options, None)
+}
+
+pub(crate) fn scan_changed_project(
+    root: &Path,
+    config: &ScanConfig,
+    scope: &ChangedScope,
+) -> Result<Vec<Finding>> {
+    scan_project_inner(
+        root,
+        config,
+        &ScanOptions {
+            paths: Some(scope.paths.clone()),
+        },
+        Some(scope),
+    )
+}
+
+fn scan_project_inner(
+    root: &Path,
+    config: &ScanConfig,
+    options: &ScanOptions,
+    scope: Option<&ChangedScope>,
 ) -> Result<Vec<Finding>> {
     if !config.enabled {
         return Ok(Vec::new());
@@ -39,7 +169,12 @@ pub fn scan_project(
     } else {
         files.clone()
     };
-    let semantic = SemanticIndex::build(&project_files);
+    let code_files = project_files
+        .iter()
+        .filter(|path| is_supported_source(path))
+        .cloned()
+        .collect::<Vec<_>>();
+    let semantic = SemanticIndex::build(&code_files, config);
 
     for path in &files {
         let metadata =
@@ -51,7 +186,7 @@ pub fn scan_project(
             continue;
         };
         let mut file_findings = Vec::new();
-        analyzer.scan_file(root, path, &source, &semantic, &mut file_findings);
+        analyzer.scan_file(root, path, &source, &semantic, config, &mut file_findings);
         apply_inline_suppressions(&source, &mut file_findings);
         findings.extend(file_findings);
     }
@@ -64,10 +199,20 @@ pub fn scan_project(
     });
     findings.extend(scan_duplicate_blocks(
         root,
-        &project_files,
+        &code_files,
         config.duplicate_block_lines,
         focus_paths.as_ref(),
     ));
+    if let Some(scope) = scope {
+        findings.retain(|finding| {
+            let finding_end = finding.end_line.unwrap_or(finding.line);
+            scope.lines.get(&finding.path).is_some_and(|ranges| {
+                ranges
+                    .iter()
+                    .any(|(start, end)| finding.line <= *end && finding_end >= *start)
+            })
+        });
+    }
     findings.sort_by(|left, right| {
         left.path
             .cmp(&right.path)
@@ -103,6 +248,7 @@ fn collect_source_files(
     options: &ScanOptions,
 ) -> Result<Vec<std::path::PathBuf>> {
     if let Some(paths) = &options.paths {
+        let include_tests = config.include_tests;
         return Ok(paths
             .iter()
             .map(|path| {
@@ -112,7 +258,16 @@ fn collect_source_files(
                     root.join(path)
                 }
             })
-            .filter(|path| path.is_file() && is_supported_source(path))
+            .filter(|path| {
+                path.is_file()
+                    && is_scannable(path)
+                    && !is_builtin_excluded(path)
+                    && !config
+                        .extra_excludes
+                        .iter()
+                        .any(|fragment| path.to_string_lossy().contains(fragment))
+                    && (include_tests || !is_test_path(path))
+            })
             .collect());
     }
 
@@ -136,8 +291,7 @@ fn collect_source_files(
     let mut files = Vec::new();
     for entry in builder.build() {
         let entry = entry.context("failed while walking project files")?;
-        if entry.file_type().is_some_and(|kind| kind.is_file()) && is_supported_source(entry.path())
-        {
+        if entry.file_type().is_some_and(|kind| kind.is_file()) && is_scannable(entry.path()) {
             files.push(entry.into_path());
         }
     }
@@ -187,7 +341,7 @@ fn is_test_path(path: &Path) -> bool {
         || file_name.contains(".spec.")
 }
 
-fn is_supported_source(path: &Path) -> bool {
+pub(crate) fn is_supported_source(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|value| value.to_str()),
         Some(
@@ -241,14 +395,38 @@ fn is_supported_source(path: &Path) -> bool {
     )
 }
 
+fn is_scannable(path: &Path) -> bool {
+    is_supported_source(path) || is_secret_text_file(path)
+}
+
+fn is_secret_text_file(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    name == "dockerfile"
+        || name.starts_with(".env")
+        || matches!(
+            path.extension()
+                .and_then(|value| value.to_str())
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("yaml" | "yml" | "json" | "toml" | "ini" | "conf" | "properties")
+        )
+}
+
 /// A data literal spanning this many source lines is almost always embedded
 /// fixture/mock data that belongs in its own file rather than mixed into logic.
 const MAX_DATA_LITERAL_LINES: usize = 80;
 /// Or this many top-level elements/entries, for dense single-line-ish dumps.
 const MAX_DATA_LITERAL_ELEMENTS: usize = 50;
+const MAX_FUNCTION_COMPLEXITY: usize = 15;
 
 struct Analyzer {
     select_all: Regex,
+    hardcoded_secret: Regex,
+    weak_crypto_tls: Regex,
     script_block: Regex,
     ts_lang: Regex,
 }
@@ -394,12 +572,17 @@ impl FileProvenance {
 struct SemanticIndex {
     files: HashMap<std::path::PathBuf, FileProvenance>,
     functions: HashMap<String, SinkSet>,
+    authorized_functions: HashSet<String>,
+    taint_source_functions: HashSet<String>,
 }
 
 struct FunctionDraft {
     name: String,
     sinks: SinkSet,
     calls: Vec<String>,
+    authorized: bool,
+    source: bool,
+    source_calls: Vec<String>,
 }
 
 fn collect_function_drafts(
@@ -409,6 +592,7 @@ fn collect_function_drafts(
     provenance: &FileProvenance,
     drafts: &mut Vec<FunctionDraft>,
     counts: &mut HashMap<String, usize>,
+    config: &ScanConfig,
 ) {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -422,6 +606,9 @@ fn collect_function_drafts(
             let body = node.child_by_field_name("body").unwrap_or(node);
             let mut sinks = SinkSet::default();
             let mut calls = Vec::new();
+            let mut authorized = false;
+            let mut taint_source = false;
+            let mut source_calls = Vec::new();
             let mut body_stack = vec![body];
             // forgeguard: allow FG-ALG-001 -- function bodies are disjoint; nested functions are skipped here
             while let Some(child) = body_stack.pop() {
@@ -432,6 +619,25 @@ fn collect_function_drafts(
                     let method = terminal_name(callee);
                     sinks.insert(provenance.classify(callee, method));
                     calls.push(method.to_owned());
+                    authorized |= contains_access_control(callee);
+                }
+                if matches!(child.kind(), "return_statement" | "return_expression") {
+                    taint_source |= expression_is_taint_source(
+                        node_text(child, source),
+                        config,
+                        &SemanticIndex::default(),
+                        Path::new(""),
+                    );
+                    let mut return_stack = vec![child];
+                    while let Some(return_child) = return_stack.pop() {
+                        if let Some(callee) = call_name(return_child, source) {
+                            source_calls.push(terminal_name(callee).to_owned());
+                        }
+                        return_stack.extend(
+                            (0..return_child.named_child_count())
+                                .filter_map(|index| return_child.named_child(index as u32)),
+                        );
+                    }
                 }
                 body_stack.extend(
                     (0..child.named_child_count())
@@ -439,7 +645,14 @@ fn collect_function_drafts(
                 );
             }
             *counts.entry(name.clone()).or_default() += 1;
-            drafts.push(FunctionDraft { name, sinks, calls });
+            drafts.push(FunctionDraft {
+                name,
+                sinks,
+                calls,
+                authorized,
+                source: taint_source,
+                source_calls,
+            });
         }
         stack.extend(
             (0..node.named_child_count()).filter_map(|index| node.named_child(index as u32)),
@@ -579,7 +792,7 @@ fn network_methods() -> &'static [&'static str] {
 }
 
 impl SemanticIndex {
-    fn build(files: &[std::path::PathBuf]) -> Self {
+    fn build(files: &[std::path::PathBuf], config: &ScanConfig) -> Self {
         let mut index = Self::default();
         let mut drafts = Vec::new();
         let mut counts = HashMap::<String, usize>::new();
@@ -611,6 +824,7 @@ impl SemanticIndex {
                 &provenance,
                 &mut drafts,
                 &mut counts,
+                config,
             );
             provenance
                 .local_symbols
@@ -621,6 +835,12 @@ impl SemanticIndex {
         for draft in &drafts {
             if counts.get(&draft.name) == Some(&1) {
                 index.functions.insert(draft.name.clone(), draft.sinks);
+                if draft.authorized {
+                    index.authorized_functions.insert(draft.name.clone());
+                }
+                if draft.source {
+                    index.taint_source_functions.insert(draft.name.clone());
+                }
             }
         }
         for _ in 0..drafts.len().max(1) {
@@ -645,6 +865,20 @@ impl SemanticIndex {
                     .entry(draft.name.clone())
                     .or_default()
                     .insert(inherited);
+                if draft
+                    .calls
+                    .iter()
+                    .any(|call| index.authorized_functions.contains(call))
+                {
+                    changed |= index.authorized_functions.insert(draft.name.clone());
+                }
+                if draft
+                    .source_calls
+                    .iter()
+                    .any(|call| index.taint_source_functions.contains(call))
+                {
+                    changed |= index.taint_source_functions.insert(draft.name.clone());
+                }
             }
             if !changed {
                 break;
@@ -677,6 +911,12 @@ impl Analyzer {
     fn new() -> Result<Self> {
         Ok(Self {
             select_all: Regex::new(r"(?xi)\bSELECT\s+\*\s+FROM\b")?,
+            hardcoded_secret: Regex::new(
+                r"(?x)(AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{36,255}|sk_(?:live|prod)_[A-Za-z0-9]{16,}|-----BEGIN\ (?:RSA\ |EC\ |OPENSSH\ )?PRIVATE\ KEY-----)",
+            )?,
+            weak_crypto_tls: Regex::new(
+                r#"(?xi)(createHash\s*\(\s*["'](?:md5|sha1)["']|hashlib\.(?:md5|sha1)\s*\(|MessageDigest\.getInstance\s*\(\s*["']SHA-?1["']|rejectUnauthorized\s*:\s*false|verify\s*=\s*false|SSLv3|PROTOCOL_TLSv1\b|TLSv1(?:\.0)?["'])"#,
+            )?,
             script_block: Regex::new(r"(?is)<script\b[^>]*>(.*?)</script>")?,
             ts_lang: Regex::new(r#"(?i)lang\s*=\s*["']?ts"#)?,
         })
@@ -730,9 +970,14 @@ impl Analyzer {
         path: &Path,
         source: &str,
         semantic: &SemanticIndex,
+        config: &ScanConfig,
         findings: &mut Vec<Finding>,
     ) {
         let relative = path.strip_prefix(root).unwrap_or(path).to_path_buf();
+        if is_secret_text_file(path) {
+            self.scan_text_secrets(&relative, source, findings);
+            return;
+        }
         let component = self.extract_component_script(path, source);
         let (profile, source, emit_parse_errors) = match component.as_ref() {
             Some((profile, masked)) => (*profile, masked.as_str(), false),
@@ -771,9 +1016,81 @@ impl Analyzer {
             }
             return;
         }
+        self.scan_secrets(&relative, source, tree.root_node(), findings);
 
         let mut stack = vec![(tree.root_node(), 0usize)];
         while let Some((node, loop_depth)) = stack.pop() {
+            let weak_call = call_name(node, source).is_some_and(|callee| {
+                matches!(
+                    terminal_name(&callee.to_ascii_lowercase()),
+                    "createhash" | "md5" | "sha1" | "getinstance"
+                ) && self.weak_crypto_tls.is_match(node_text(node, source))
+            });
+            let weak_tls = matches!(
+                node.kind(),
+                "pair" | "assignment" | "assignment_expression" | "keyword_argument"
+            ) && self.weak_crypto_tls.is_match(node_text(node, source));
+            if weak_call || weak_tls {
+                findings.push(finding_for_node(
+                    "FG-SEC-004",
+                    "Weak cryptography or TLS configuration",
+                    Severity::Warning,
+                    &relative,
+                    node,
+                    source,
+                    "Use a modern password KDF or SHA-256+ as appropriate, TLS 1.2+, and keep certificate verification enabled.",
+                ));
+            }
+            if is_exception_handler(node.kind()) && exception_is_swallowed(node, source) {
+                findings.push(finding_for_node(
+                    "FG-ERR-001",
+                    "Exception is swallowed",
+                    Severity::Warning,
+                    &relative,
+                    node,
+                    source,
+                    "Handle, return, or rethrow the exception; an empty handler hides failures.",
+                ));
+            }
+            if is_xss_assignment(node, source) {
+                if let Some(value) = assignment_value(node) {
+                    if taint_reaches(
+                        value,
+                        source,
+                        profile,
+                        TaintSink::Html,
+                        config,
+                        semantic,
+                        path,
+                    ) {
+                        findings.push(finding_for_node(
+                            "FG-SEC-006",
+                            "Tainted data reaches an HTML sink",
+                            Severity::Warning,
+                            &relative,
+                            node,
+                            source,
+                            "Use a context-aware HTML sanitizer or a text-only DOM API before rendering untrusted data.",
+                        ));
+                    }
+                }
+            }
+            if is_complexity_scope(node.kind()) {
+                let complexity = function_complexity(node);
+                if complexity > MAX_FUNCTION_COMPLEXITY {
+                    let mut complexity_finding = finding(
+                        "FG-CPLX-001",
+                        "High function complexity",
+                        Severity::Warning,
+                        &relative,
+                        node.start_position().row + 1,
+                        &format!("structural complexity {complexity} exceeds {MAX_FUNCTION_COMPLEXITY}"),
+                        "Split independent decisions or simplify control flow while preserving behavior.",
+                    );
+                    complexity_finding.end_line = Some(node.end_position().row + 1);
+                    findings.push(complexity_finding);
+                }
+            }
             let starts_loop = profile.is_loop(node.kind())
                 || call_name(node, source).is_some_and(|callee| profile.is_iteration_call(callee));
             if starts_loop && loop_depth > 0 && !has_static_bound(node, source) {
@@ -792,6 +1109,30 @@ impl Analyzer {
                 let in_loop = loop_depth > 0;
                 let method = terminal_name(callee);
                 let semantic_sinks = semantic.classify(path, callee, method);
+                if is_unsafe_deserialization(callee, node_text(node, source)) {
+                    findings.push(finding_for_node(
+                        "FG-SEC-005",
+                        "Unsafe deserialization",
+                        Severity::Warning,
+                        &relative,
+                        node,
+                        source,
+                        "Use a safe data format or the library's restricted/safe loader; never deserialize untrusted objects.",
+                    ));
+                }
+                if is_mutating_route(callee)
+                    && !route_has_access_control(node_text(node, source), semantic, path)
+                {
+                    findings.push(finding_for_node(
+                        "FG-AUTH-001",
+                        "Mutating route requires access-control review",
+                        Severity::Info,
+                        &relative,
+                        node,
+                        source,
+                        "Verify authentication and object/action authorization are enforced by this route or inherited middleware.",
+                    ));
+                }
                 if in_loop && profile.is_linear_lookup(method) {
                     findings.push(finding_for_node(
                         "FG-ALG-002",
@@ -890,6 +1231,92 @@ impl Analyzer {
                         "Select only columns required by the use case.",
                     ));
                 }
+                if let Some(argument) = first_argument(node) {
+                    let html_tainted = is_xss_call(callee)
+                        && taint_reaches(
+                            argument,
+                            source,
+                            profile,
+                            TaintSink::Html,
+                            config,
+                            semantic,
+                            path,
+                        );
+                    if html_tainted {
+                        findings.push(finding_for_node(
+                            "FG-SEC-006",
+                            "Tainted data reaches an HTML sink",
+                            Severity::Warning,
+                            &relative,
+                            node,
+                            source,
+                            "Use a context-aware HTML sanitizer or a text-only rendering API.",
+                        ));
+                    }
+                    let path_tainted = is_filesystem_call(callee)
+                        && taint_reaches(
+                            argument,
+                            source,
+                            profile,
+                            TaintSink::Path,
+                            config,
+                            semantic,
+                            path,
+                        );
+                    if path_tainted {
+                        findings.push(finding_for_node(
+                            "FG-SEC-007",
+                            "Tainted path reaches a filesystem sink",
+                            Severity::Info,
+                            &relative,
+                            node,
+                            source,
+                            "Resolve against an allowed root and reject paths that escape it before filesystem access.",
+                        ));
+                    }
+                    let sensitive = is_dynamic_execution(callee)
+                        || is_filesystem_call(callee)
+                        || is_database_call(callee, method)
+                        || is_network_call(callee, method)
+                        || semantic_sinks.contains(SinkSet::DATABASE)
+                        || semantic_sinks.contains(SinkSet::NETWORK);
+                    if sensitive && !is_literal(argument) {
+                        let sink = if is_dynamic_execution(callee) {
+                            TaintSink::Command
+                        } else if is_database_call(callee, method)
+                            || semantic_sinks.contains(SinkSet::DATABASE)
+                        {
+                            TaintSink::Query
+                        } else {
+                            TaintSink::Network
+                        };
+                        if !is_filesystem_call(callee)
+                            && taint_reaches(
+                                argument, source, profile, sink, config, semantic, path,
+                            )
+                        {
+                            findings.push(finding_for_node(
+                                "FG-SEC-003",
+                                "Tainted function data reaches a sensitive sink",
+                                Severity::Info,
+                                &relative,
+                                node,
+                                source,
+                                "Validate or constrain the parameter before it reaches the command, query, path, or URL sink.",
+                            ));
+                        } else if is_dynamic_execution(callee) {
+                            findings.push(finding_for_node(
+                                "FG-SEC-002",
+                                "Dynamic sensitive operation",
+                                Severity::Info,
+                                &relative,
+                                node,
+                                source,
+                                "Confirm the value cannot be attacker-controlled; prefer structured APIs over dynamic evaluation or shell execution.",
+                            ));
+                        }
+                    }
+                }
             }
 
             if profile.is_data_literal(node.kind())
@@ -926,6 +1353,53 @@ impl Analyzer {
         }
     }
 
+    fn scan_secrets(&self, path: &Path, source: &str, root: Node<'_>, findings: &mut Vec<Finding>) {
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            let string_like = node.kind().contains("string") || node.kind().contains("heredoc");
+            let nested_string = node.parent().is_some_and(|parent| {
+                parent.kind().contains("string") || parent.kind().contains("heredoc")
+            });
+            if string_like
+                && !nested_string
+                && self.hardcoded_secret.is_match(node_text(node, source))
+            {
+                findings.push(finding(
+                    "FG-SEC-001",
+                    "Hardcoded credential",
+                    Severity::Error,
+                    path,
+                    node.start_position().row + 1,
+                    "credential-like value embedded in source (redacted)",
+                    "Remove and rotate the credential; load it from the platform's secret store or environment.",
+                ));
+            }
+            stack.extend(
+                (0..node.named_child_count()).filter_map(|index| node.named_child(index as u32)),
+            );
+        }
+    }
+
+    fn scan_text_secrets(&self, path: &Path, source: &str, findings: &mut Vec<Finding>) {
+        for (index, line) in source.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if !trimmed.starts_with(['#', ';'])
+                && !trimmed.starts_with("//")
+                && self.hardcoded_secret.is_match(line)
+            {
+                findings.push(finding(
+                    "FG-SEC-001",
+                    "Hardcoded credential",
+                    Severity::Error,
+                    path,
+                    index + 1,
+                    "credential-like value embedded in configuration (redacted)",
+                    "Remove and rotate the credential; load it from the platform's secret store or environment.",
+                ));
+            }
+        }
+    }
+
     fn scan_sql(&self, path: &Path, source: &str, findings: &mut Vec<Finding>) {
         let mut line = 1;
         let mut previous_start = 0;
@@ -946,6 +1420,383 @@ impl Analyzer {
             ));
         }
     }
+}
+
+fn function_complexity(function: Node<'_>) -> usize {
+    let mut complexity = 1;
+    let mut stack = (0..function.named_child_count())
+        .filter_map(|index| function.named_child(index as u32))
+        .collect::<Vec<_>>();
+    while let Some(node) = stack.pop() {
+        if is_complexity_scope(node.kind()) {
+            continue;
+        }
+        if matches!(
+            node.kind(),
+            "if_statement"
+                | "if_expression"
+                | "elif_clause"
+                | "for_statement"
+                | "for_expression"
+                | "enhanced_for_statement"
+                | "foreach_statement"
+                | "while_statement"
+                | "while_expression"
+                | "do_statement"
+                | "do_while_statement"
+                | "repeat_while_statement"
+                | "catch_clause"
+                | "except_clause"
+                | "case_statement"
+                | "switch_case"
+                | "match_arm"
+                | "conditional_expression"
+        ) {
+            complexity += 1;
+        }
+        stack.extend(
+            (0..node.named_child_count()).filter_map(|index| node.named_child(index as u32)),
+        );
+    }
+    complexity
+}
+
+fn first_argument(call: Node<'_>) -> Option<Node<'_>> {
+    call.child_by_field_name("arguments")?.named_child(0)
+}
+
+fn is_literal(node: Node<'_>) -> bool {
+    node.kind().contains("string")
+        || matches!(
+            node.kind(),
+            "integer" | "float" | "true" | "false" | "none" | "null" | "nil"
+        )
+}
+
+fn is_dynamic_execution(callee: &str) -> bool {
+    let normalized = callee.to_ascii_lowercase();
+    matches!(
+        terminal_name(&normalized),
+        "eval" | "exec" | "system" | "popen" | "shell_exec"
+    ) || normalized.ends_with("child_process.exec")
+}
+
+fn is_filesystem_call(callee: &str) -> bool {
+    let normalized = callee.to_ascii_lowercase();
+    matches!(
+        terminal_name(&normalized),
+        "readfile" | "readfilesync" | "read_to_string"
+    ) || normalized.starts_with("fs.")
+        || normalized.starts_with("file::open")
+        || normalized.starts_with("std::fs::")
+}
+
+#[derive(Clone, Copy)]
+enum TaintSink {
+    Html,
+    Path,
+    Command,
+    Query,
+    Network,
+}
+
+fn taint_reaches(
+    argument: Node<'_>,
+    source: &str,
+    profile: LanguageProfile,
+    sink: TaintSink,
+    config: &ScanConfig,
+    semantic: &SemanticIndex,
+    path: &Path,
+) -> bool {
+    let mut parent = argument.parent();
+    while let Some(node) = parent {
+        if profile.is_function(node.kind()) || is_complexity_scope(node.kind()) {
+            let Some(parameters) = node.child_by_field_name("parameters") else {
+                return false;
+            };
+            let mut tainted = identifiers(node_text(parameters, source))
+                .into_iter()
+                .filter(|word| !binding_keywords().contains(&word.as_str()))
+                .collect::<HashSet<_>>();
+            let function_start = node.start_byte();
+            let argument_start = argument.start_byte();
+            let prefix = source
+                .get(function_start..argument_start)
+                .unwrap_or_default();
+            // forgeguard: allow FG-ALG-001 -- assignments are propagated over a bounded function prefix
+            for _ in 0..4 {
+                let mut changed = false;
+                // forgeguard: allow FG-ALG-001 -- four-pass cap over one bounded function prefix
+                for statement in prefix.lines() {
+                    if let Some((left, right)) = assignment_parts(statement) {
+                        // forgeguard: allow FG-ALG-002 -- keyword catalog is a fixed nine-entry slice
+                        let Some(binding) = identifiers(left)
+                            .into_iter()
+                            .rev()
+                            .find(|word| !binding_keywords().contains(&word.as_str()))
+                        else {
+                            continue;
+                        };
+                        if is_sanitized_expression(right, sink, config) {
+                            tainted.remove(&binding);
+                        } else if expression_is_tainted(right, &tainted, config, semantic, path) {
+                            changed |= tainted.insert(binding);
+                        }
+                    }
+                    if let Some(binding) =
+                        tainted_collection(statement, &tainted, config, semantic, path)
+                    {
+                        changed |= tainted.insert(binding);
+                    }
+                }
+                if !changed {
+                    break;
+                }
+            }
+            let argument_identifiers = identifiers(node_text(argument, source));
+            let argument = node_text(argument, source);
+            return !is_sanitized_expression(argument, sink, config)
+                && (argument_identifiers
+                    .iter()
+                    .any(|identifier| tainted.contains(identifier))
+                    || expression_is_taint_source(argument, config, semantic, path));
+        }
+        parent = node.parent();
+    }
+    false
+}
+
+fn assignment_parts(statement: &str) -> Option<(&str, &str)> {
+    if let Some(parts) = statement.split_once(":=") {
+        return Some(parts);
+    }
+    let bytes = statement.as_bytes();
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte != b'=' {
+            continue;
+        }
+        let before = index.checked_sub(1).and_then(|offset| bytes.get(offset));
+        let after = bytes.get(index + 1);
+        if before.is_some_and(|byte| matches!(*byte, b'=' | b'!' | b'<' | b'>'))
+            || after.is_some_and(|byte| matches!(*byte, b'=' | b'>'))
+        {
+            continue;
+        }
+        return Some((&statement[..index], &statement[index + 1..]));
+    }
+    None
+}
+
+fn expression_is_tainted(
+    value: &str,
+    tainted: &HashSet<String>,
+    config: &ScanConfig,
+    semantic: &SemanticIndex,
+    path: &Path,
+) -> bool {
+    expression_is_taint_source(value, config, semantic, path)
+        || identifiers(value)
+            .iter()
+            .any(|identifier| tainted.contains(identifier))
+}
+
+fn expression_is_taint_source(
+    value: &str,
+    config: &ScanConfig,
+    semantic: &SemanticIndex,
+    path: &Path,
+) -> bool {
+    let normalized = value.to_ascii_lowercase().replace(' ', "");
+    [
+        "req.body",
+        "req.query",
+        "req.params",
+        "request.body",
+        "request.args",
+        "request.form",
+        "event.body",
+        "location.search",
+        "document.cookie",
+    ]
+    .iter()
+    .any(|source| normalized.contains(source))
+        || ["readline", "input", "prompt", "getparameter", "formvalue"]
+            .iter()
+            .any(|source| contains_named_call(value, source))
+        || identifiers(value).iter().any(|identifier| {
+            config
+                .taint_sources
+                .iter()
+                .any(|source| identifier.eq_ignore_ascii_case(source))
+                || (semantic.taint_source_functions.contains(identifier)
+                    && semantic
+                        .files
+                        .get(path)
+                        .is_some_and(|file| file.local_symbols.contains(identifier)))
+        })
+}
+
+fn tainted_collection(
+    statement: &str,
+    tainted: &HashSet<String>,
+    config: &ScanConfig,
+    semantic: &SemanticIndex,
+    path: &Path,
+) -> Option<String> {
+    for marker in [".push(", ".append(", ".add(", ".insert("] {
+        let Some((receiver, arguments)) = statement.split_once(marker) else {
+            continue;
+        };
+        if expression_is_tainted(arguments, tainted, config, semantic, path) {
+            return identifiers(receiver).into_iter().next_back();
+        }
+    }
+    None
+}
+
+fn is_sanitized_expression(value: &str, sink: TaintSink, config: &ScanConfig) -> bool {
+    if config
+        .trusted_sanitizers
+        .iter()
+        .any(|sanitizer| contains_named_call(value, sanitizer))
+    {
+        return true;
+    }
+    match sink {
+        TaintSink::Html => [
+            "sanitizehtml",
+            "escapehtml",
+            "dompurify.sanitize",
+            "bleach.clean",
+        ]
+        .iter()
+        .any(|sanitizer| contains_named_call(value, sanitizer)),
+        TaintSink::Path => ["secure_filename", "sanitize_filename", "sanitizefilename"]
+            .iter()
+            .any(|sanitizer| contains_named_call(value, sanitizer)),
+        TaintSink::Command => ["shlex.quote", "shellescape"]
+            .iter()
+            .any(|sanitizer| contains_named_call(value, sanitizer)),
+        TaintSink::Query | TaintSink::Network => false,
+    }
+}
+
+fn contains_named_call(value: &str, name: &str) -> bool {
+    let normalized = value.to_ascii_lowercase().replace(char::is_whitespace, "");
+    let name = name
+        .trim()
+        .trim_end_matches('(')
+        .to_ascii_lowercase()
+        .replace(char::is_whitespace, "");
+    if name.is_empty() {
+        return false;
+    }
+    let needle = format!("{name}(");
+    normalized.match_indices(&needle).any(|(start, _)| {
+        start == 0
+            || !normalized[..start]
+                .chars()
+                .next_back()
+                .is_some_and(|character| character.is_ascii_alphanumeric() || character == '_')
+    })
+}
+
+fn is_exception_handler(kind: &str) -> bool {
+    matches!(kind, "catch_clause" | "except_clause" | "rescue")
+}
+
+fn exception_is_swallowed(node: Node<'_>, source: &str) -> bool {
+    let body = node
+        .child_by_field_name("body")
+        .or_else(|| node.named_child(node.named_child_count().saturating_sub(1) as u32));
+    let Some(body) = body else {
+        return true;
+    };
+    let compact = node_text(body, source)
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
+    matches!(compact.as_str(), "" | "{}" | "{;}" | "pass" | "pass;")
+}
+
+fn assignment_value(node: Node<'_>) -> Option<Node<'_>> {
+    node.child_by_field_name("right")
+        .or_else(|| node.child_by_field_name("value"))
+}
+
+fn is_xss_assignment(node: Node<'_>, source: &str) -> bool {
+    if !matches!(
+        node.kind(),
+        "assignment_expression" | "assignment" | "augmented_assignment_expression"
+    ) {
+        return false;
+    }
+    let left = node
+        .child_by_field_name("left")
+        .or_else(|| node.child_by_field_name("name"))
+        .map(|left| node_text(left, source).to_ascii_lowercase())
+        .unwrap_or_default();
+    left.ends_with(".innerhtml")
+        || left.ends_with(".outerhtml")
+        || left.contains("dangerouslysetinnerhtml")
+}
+
+fn is_xss_call(callee: &str) -> bool {
+    let normalized = callee.to_ascii_lowercase();
+    normalized.ends_with("document.write")
+        || matches!(
+            terminal_name(&normalized),
+            "insertadjacenthtml" | "render_template_string" | "markup"
+        )
+}
+
+fn is_unsafe_deserialization(callee: &str, expression: &str) -> bool {
+    let normalized = callee.to_ascii_lowercase();
+    (matches!(
+        normalized.as_str(),
+        "pickle.load" | "pickle.loads" | "marshal.load" | "marshal.loads" | "php.unserialize"
+    ) || matches!(
+        terminal_name(&normalized),
+        "unserialize" | "objectinputstream" | "deserialize"
+    ) || (normalized.ends_with("yaml.load")
+        && !expression.to_ascii_lowercase().contains("safeloader")))
+        && !normalized.ends_with("json.deserialize")
+}
+
+fn is_mutating_route(callee: &str) -> bool {
+    let normalized = callee.to_ascii_lowercase();
+    let mut parts = normalized.rsplit('.');
+    let method = parts.next().unwrap_or_default();
+    let receiver = parts.next().unwrap_or_default();
+    matches!(method, "post" | "put" | "patch" | "delete")
+        && matches!(
+            receiver,
+            "app" | "router" | "server" | "api" | "route" | "fastify"
+        )
+}
+
+fn contains_access_control(source: &str) -> bool {
+    identifiers(source).iter().any(|identifier| {
+        let identifier = identifier.to_ascii_lowercase();
+        identifier == "auth"
+            || identifier.ends_with("auth")
+            || identifier.starts_with("authoriz")
+            || ["permission", "policy", "role", "guard", "middleware"]
+                .iter()
+                .any(|marker| identifier.contains(marker))
+    })
+}
+
+fn route_has_access_control(source: &str, semantic: &SemanticIndex, path: &Path) -> bool {
+    contains_access_control(source)
+        || identifiers(source).iter().any(|identifier| {
+            semantic.authorized_functions.contains(identifier)
+                && semantic
+                    .files
+                    .get(path)
+                    .is_some_and(|file| file.local_symbols.contains(identifier))
+        })
 }
 
 #[derive(Clone, Copy)]
@@ -1221,6 +2072,8 @@ pub(crate) struct CanonicalFunction {
     pub profile: &'static str,
     pub line: usize,
     pub canonical: String,
+    pub behavior: Option<String>,
+    pub domain: Vec<String>,
     pub original: String,
 }
 
@@ -1255,6 +2108,11 @@ pub(crate) fn canonical_functions(
                 profile: profile.family(),
                 line: node.start_position().row + 1,
                 canonical,
+                behavior: behavioral_fingerprint(node, source),
+                domain: node
+                    .child_by_field_name("name")
+                    .map(|name| domain_tokens(node_text(name, source)))
+                    .unwrap_or_default(),
                 original: node_text(node, source)
                     .split_whitespace()
                     .collect::<Vec<_>>()
@@ -1269,6 +2127,63 @@ pub(crate) fn canonical_functions(
     functions
 }
 
+fn domain_tokens(name: &str) -> Vec<String> {
+    let mut words = String::with_capacity(name.len());
+    let mut previous_lowercase = false;
+    for character in name.chars() {
+        if !character.is_ascii_alphanumeric() {
+            words.push(' ');
+            previous_lowercase = false;
+            continue;
+        }
+        if character.is_ascii_uppercase() && previous_lowercase {
+            words.push(' ');
+        }
+        words.push(character.to_ascii_lowercase());
+        previous_lowercase = character.is_ascii_lowercase();
+    }
+    words
+        .split_whitespace()
+        .filter(|word| {
+            word.len() >= 4
+                && !matches!(
+                    *word,
+                    "build"
+                        | "create"
+                        | "delete"
+                        | "export"
+                        | "handle"
+                        | "import"
+                        | "process"
+                        | "update"
+                )
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+fn behavioral_fingerprint(root: Node<'_>, source: &str) -> Option<String> {
+    let mut calls = Vec::new();
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        if node != root && is_complexity_scope(node.kind()) {
+            continue;
+        }
+        if let Some(callee) = call_name(node, source) {
+            let terminal = terminal_name(callee).to_ascii_lowercase();
+            if !matches!(terminal.as_str(), "log" | "print" | "println") {
+                calls.push(terminal);
+            }
+        }
+        stack.extend(
+            (0..node.named_child_count()).filter_map(|index| node.named_child(index as u32)),
+        );
+    }
+    calls.sort();
+    calls.dedup();
+    (calls.len() >= 3).then(|| calls.join("|"))
+}
+
 fn is_clone_scope(kind: &str) -> bool {
     matches!(
         kind,
@@ -1280,6 +2195,19 @@ fn is_clone_scope(kind: &str) -> bool {
             | "method_definition"
             | "constructor_declaration"
     )
+}
+
+fn is_complexity_scope(kind: &str) -> bool {
+    is_clone_scope(kind)
+        || matches!(
+            kind,
+            "function_expression"
+                | "arrow_function"
+                | "lambda"
+                | "closure_expression"
+                | "anonymous_function"
+                | "local_function_statement"
+        )
 }
 
 fn canonicalize_node(
@@ -1595,6 +2523,7 @@ fn finding(
         blocking: false,
         path: path.to_path_buf(),
         line,
+        end_line: None,
         evidence: truncate(evidence, 240),
         recommendation: recommendation.to_owned(),
     }

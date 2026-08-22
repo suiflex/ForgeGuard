@@ -49,6 +49,17 @@ pub fn detect_project(root: &Path) -> Result<ProjectDetection> {
         );
         add_command(&mut commands, "test", "cargo test --workspace", true);
         add_command(&mut commands, "build", "cargo build --workspace", true);
+        add_optional_command(
+            &mut commands,
+            "dependency-audit",
+            "cargo audit --deny warnings",
+        );
+        add_optional_command(&mut commands, "supply-chain", "cargo deny check");
+        add_optional_command(
+            &mut commands,
+            "sbom",
+            "cargo cyclonedx --format json --override-filename forgeguard-sbom",
+        );
     }
 
     if root.join("go.mod").exists() {
@@ -62,7 +73,9 @@ pub fn detect_project(root: &Path) -> Result<ProjectDetection> {
             true,
         );
         add_command(&mut commands, "test", "go test ./...", true);
+        add_command(&mut commands, "lint", "go vet ./...", true);
         add_command(&mut commands, "build", "go build ./...", true);
+        add_optional_command(&mut commands, "dependency-audit", "govulncheck ./...");
     }
 
     if root.join("pyproject.toml").exists()
@@ -71,6 +84,13 @@ pub fn detect_project(root: &Path) -> Result<ProjectDetection> {
     {
         languages.insert("Python".to_owned());
         detect_python(&root, &mut package_managers, &mut test_tools, &mut commands)?;
+        add_optional_command(&mut commands, "dependency-audit", "pip-audit");
+        add_optional_command(&mut commands, "license", "pip-licenses --format=json");
+        add_optional_command(
+            &mut commands,
+            "sbom",
+            "cyclonedx-py environment --output-format JSON",
+        );
     }
 
     let package_json = root.join("package.json");
@@ -93,6 +113,16 @@ pub fn detect_project(root: &Path) -> Result<ProjectDetection> {
         test_tools.insert("Maven test".to_owned());
         add_command(&mut commands, "test", "mvn test", true);
         add_command(&mut commands, "build", "mvn package -DskipTests", true);
+        add_optional_command(
+            &mut commands,
+            "dependency-audit",
+            "mvn org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=0",
+        );
+        add_optional_command(
+            &mut commands,
+            "sbom",
+            "mvn org.cyclonedx:cyclonedx-maven-plugin:makeAggregateBom",
+        );
     } else if root.join("build.gradle").exists() || root.join("build.gradle.kts").exists() {
         languages.insert("Java/Kotlin".to_owned());
         package_managers.insert("Gradle".to_owned());
@@ -108,6 +138,19 @@ pub fn detect_project(root: &Path) -> Result<ProjectDetection> {
             &format!("{gradle} build -x test"),
             true,
         );
+        let build_source = fs::read_to_string(root.join("build.gradle"))
+            .or_else(|_| fs::read_to_string(root.join("build.gradle.kts")))
+            .unwrap_or_default();
+        if build_source.contains("dependency-check") {
+            add_optional_command(
+                &mut commands,
+                "dependency-audit",
+                &format!("{gradle} dependencyCheckAnalyze"),
+            );
+        }
+        if build_source.to_ascii_lowercase().contains("cyclonedx") {
+            add_optional_command(&mut commands, "sbom", &format!("{gradle} cyclonedxBom"));
+        }
     }
 
     if root.join("Package.swift").exists() {
@@ -157,6 +200,27 @@ pub fn detect_project(root: &Path) -> Result<ProjectDetection> {
         );
         add_command(&mut commands, "test", "dotnet test", true);
         add_command(&mut commands, "build", "dotnet build --no-restore", true);
+        add_optional_command(
+            &mut commands,
+            "dependency-audit",
+            "dotnet restore -p:NuGetAudit=true -p:NuGetAuditMode=all -p:WarningsAsErrors=\"NU1901;NU1902;NU1903;NU1904\"",
+        );
+    }
+
+    if root.join("composer.json").exists() {
+        languages.insert("PHP".to_owned());
+        package_managers.insert("Composer".to_owned());
+        add_optional_command(&mut commands, "dependency-audit", "composer audit");
+    }
+
+    if root.join("Gemfile").exists() {
+        languages.insert("Ruby".to_owned());
+        package_managers.insert("Bundler".to_owned());
+        add_optional_command(
+            &mut commands,
+            "dependency-audit",
+            "bundle audit check --update",
+        );
     }
 
     if root.join("schema.prisma").exists() || root.join("prisma/schema.prisma").exists() {
@@ -238,21 +302,23 @@ fn detect_node(
         }
     }
 
-    let runner = if root.join("pnpm-lock.yaml").exists() {
+    let (runner, package_manager) = if root.join("pnpm-lock.yaml").exists() {
         package_managers.insert("pnpm".to_owned());
-        "pnpm"
+        ("pnpm", "pnpm")
     } else if root.join("yarn.lock").exists() {
         package_managers.insert("Yarn".to_owned());
-        "yarn"
+        ("yarn", "yarn")
     } else if root.join("bun.lockb").exists() || root.join("bun.lock").exists() {
         package_managers.insert("Bun".to_owned());
-        "bun run"
+        ("bun run", "bun")
     } else {
         package_managers.insert("npm".to_owned());
-        "npm run"
+        ("npm run", "npm")
     };
 
-    if let Some(scripts) = value.get("scripts").and_then(Value::as_object) {
+    let scripts = value.get("scripts").and_then(Value::as_object);
+    if let Some(scripts) = scripts {
+        let mut added = BTreeSet::new();
         let candidates = [
             ("format:check", "format"),
             ("format", "format"),
@@ -262,13 +328,27 @@ fn detect_node(
             ("test", "test"),
             ("test:unit", "test"),
             ("build", "build"),
+            ("audit", "dependency-audit"),
+            ("licenses", "license"),
+            ("license", "license"),
+            ("sbom", "sbom"),
         ];
         for (script, name) in candidates {
-            if scripts.contains_key(script) && !commands.contains_key(name) {
+            if scripts.contains_key(script) && added.insert(name) {
                 let command = format!("{runner} {script}");
                 add_command(commands, name, &command, true);
             }
         }
+    }
+    if !scripts.is_some_and(|scripts| scripts.contains_key("audit")) {
+        add_optional_command(
+            commands,
+            "dependency-audit",
+            &format!("{package_manager} audit"),
+        );
+    }
+    if package_manager == "npm" && !scripts.is_some_and(|scripts| scripts.contains_key("sbom")) {
+        add_optional_command(commands, "sbom", "npm sbom --sbom-format cyclonedx");
     }
 
     Ok(())
@@ -386,6 +466,12 @@ fn detect_python(
     if source.contains("mypy") {
         add_command(commands, "typecheck", "mypy .", true);
     }
+    if source.contains("pyright") {
+        add_command(commands, "typecheck", "pyright", true);
+    }
+    if source.contains("pylint") && !source.contains("ruff") {
+        add_command(commands, "lint", "pylint .", true);
+    }
 
     Ok(())
 }
@@ -404,11 +490,62 @@ fn add_command(
     command: &str,
     required: bool,
 ) {
-    commands.entry(name.to_owned()).or_insert(CommandConfig {
-        name: name.to_owned(),
-        command: command.to_owned(),
-        required,
-        enabled: true,
-        timeout_seconds: 600,
-    });
+    insert_command(
+        commands,
+        CommandConfig {
+            name: name.to_owned(),
+            command: command.to_owned(),
+            required,
+            enabled: true,
+            timeout_seconds: 600,
+        },
+    );
+}
+
+fn add_optional_command(commands: &mut BTreeMap<String, CommandConfig>, name: &str, command: &str) {
+    insert_command(
+        commands,
+        CommandConfig {
+            name: name.to_owned(),
+            command: command.to_owned(),
+            required: true,
+            enabled: false,
+            timeout_seconds: 600,
+        },
+    );
+}
+
+fn insert_command(commands: &mut BTreeMap<String, CommandConfig>, mut command: CommandConfig) {
+    if commands
+        .get(&command.name)
+        .is_some_and(|existing| existing.command == command.command)
+    {
+        return;
+    }
+    if commands.contains_key(&command.name) {
+        let tool = command
+            .command
+            .split_whitespace()
+            .next()
+            .unwrap_or("tool")
+            .trim_start_matches("./")
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() {
+                    character.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>();
+        let base = format!("{}-{tool}", command.name);
+        let mut candidate = base.clone();
+        let mut suffix = 2;
+        while commands.contains_key(&candidate) {
+            candidate = format!("{base}-{suffix}");
+            suffix += 1;
+        }
+        command.name = candidate;
+    }
+    commands.insert(command.name.clone(), command);
 }

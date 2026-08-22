@@ -156,6 +156,24 @@ if grep -A4 -F "differ from this version" "${temporary_directory}/drift-plain" |
     exit 1
 fi
 
+# Global installation has no Code Guard mode to select and must not rewrite a
+# legacy global config left by an older release.
+global_home="${temporary_directory}/global-home"
+mkdir -p "$global_home/.forgeguard"
+printf 'version = 1\nmode = "strict"\n\n[project]\nname = "legacy-global"\n' > "$global_home/.forgeguard/config.toml"
+cp "$global_home/.forgeguard/config.toml" "${temporary_directory}/legacy-global-config"
+run_on_pty env "HOME=$global_home" "$binary" init --global --refresh --agent codex > "${temporary_directory}/global-out" 2>&1
+strip_ansi < "${temporary_directory}/global-out" > "${temporary_directory}/global-plain"
+if grep -qF "Code Guard mode" "${temporary_directory}/global-plain"; then
+    echo "error: global init opened the repository mode picker" >&2
+    cat "${temporary_directory}/global-plain" >&2
+    exit 1
+fi
+if ! cmp -s "${temporary_directory}/legacy-global-config" "$global_home/.forgeguard/config.toml"; then
+    echo "error: global init rewrote the legacy global config" >&2
+    exit 1
+fi
+
 # An empty pick must install nothing. Left arrow clears the selection, and two
 # empty confirmations cancel.
 empty="${temporary_directory}/empty"

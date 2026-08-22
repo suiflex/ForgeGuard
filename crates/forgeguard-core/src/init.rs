@@ -12,6 +12,9 @@ use crate::{config::ForgeGuardConfig, detect_project, ProjectDetection};
 const AGENTS_TEMPLATE: &str = include_str!("../assets/templates/AGENTS.md");
 const CLAUDE_TEMPLATE: &str = include_str!("../assets/templates/CLAUDE.md");
 const CURSOR_TEMPLATE: &str = include_str!("../assets/templates/CURSOR.md");
+const OPENCLAW_PLUGIN_MANIFEST: &str = include_str!("../assets/openclaw/openclaw.plugin.json");
+const OPENCLAW_PLUGIN_PACKAGE: &str = include_str!("../assets/openclaw/package.json");
+const OPENCLAW_PLUGIN_ENTRY: &str = include_str!("../assets/openclaw/index.js");
 const FORGEGUARD_GITIGNORE: &str = "cache/\nreports/\n";
 const AGENT_HOOK_FILES: [&str; 4] = [
     ".claude/settings.json",
@@ -42,6 +45,13 @@ pub(crate) const CODEX_SCOPE_HOOK_COMMAND: &str = "forgeguard hook scope --agent
 pub(crate) const CLAUDE_SCOPE_HOOK_COMMAND: &str = "forgeguard hook scope --agent claude";
 pub(crate) const CURSOR_SCOPE_HOOK_COMMAND: &str = "forgeguard hook scope --agent cursor";
 pub(crate) const ANTIGRAVITY_SCOPE_HOOK_COMMAND: &str = "forgeguard hook scope --agent antigravity";
+
+fn hook_command(command: &str, scope: InstallScope) -> String {
+    match scope {
+        InstallScope::Project => command.to_owned(),
+        InstallScope::Global => format!("{command} --global"),
+    }
+}
 
 const SKILL_ASSETS: &[(&str, &str)] = &[
     (
@@ -89,6 +99,10 @@ const SKILL_ASSETS: &[(&str, &str)] = &[
         include_str!("../assets/skills/engineering/references/testing.md"),
     ),
     (
+        "references/general-work.md",
+        include_str!("../assets/skills/engineering/references/general-work.md"),
+    ),
+    (
         "agents/openai.yaml",
         include_str!("../assets/skills/engineering/agents/openai.yaml"),
     ),
@@ -113,6 +127,8 @@ pub enum AgentTarget {
     Claude,
     Cursor,
     OpenCode,
+    Hermes,
+    OpenClaw,
     Antigravity,
     Windsurf,
     Copilot,
@@ -190,6 +206,8 @@ const ALL_AGENT_TARGETS: &[AgentTarget] = &[
     AgentTarget::Claude,
     AgentTarget::Cursor,
     AgentTarget::OpenCode,
+    AgentTarget::Hermes,
+    AgentTarget::OpenClaw,
     AgentTarget::Antigravity,
     AgentTarget::Windsurf,
     AgentTarget::Copilot,
@@ -211,6 +229,8 @@ const PROJECT_AGENT_MARKERS: &[(AgentTarget, &[&str])] = &[
     (AgentTarget::Claude, &[".claude"]),
     (AgentTarget::Cursor, &[".cursor", ".cursorrules"]),
     (AgentTarget::OpenCode, &[".opencode", "opencode.json"]),
+    (AgentTarget::Hermes, &[".hermes"]),
+    (AgentTarget::OpenClaw, &[".openclaw", "openclaw.json"]),
     (
         AgentTarget::Antigravity,
         &[".agents/rules", ".agents/hooks.json", ".agent/rules"],
@@ -236,6 +256,8 @@ const GLOBAL_AGENT_MARKERS: &[(AgentTarget, &[&str])] = &[
     (AgentTarget::Claude, &[".claude"]),
     (AgentTarget::Cursor, &[".cursor"]),
     (AgentTarget::OpenCode, &[".config/opencode"]),
+    (AgentTarget::Hermes, &[".hermes"]),
+    (AgentTarget::OpenClaw, &[".openclaw"]),
     (AgentTarget::Antigravity, &[".gemini"]),
     (AgentTarget::Windsurf, &[".codeium/windsurf", ".devin"]),
     (AgentTarget::Roo, &[".roo"]),
@@ -261,6 +283,14 @@ pub fn initialize_global(home: &Path, options: &InitOptions) -> Result<GlobalIni
         .canonicalize()
         .with_context(|| format!("failed to resolve home directory {}", home.display()))?;
     let mut log = InstallLog::default();
+
+    // Global configuration belongs to General Guard and is created once. In
+    // particular, refreshes must not rewrite values the user has tuned.
+    write_config(
+        &home,
+        &ForgeGuardConfig::new("global", Vec::new()),
+        &mut log,
+    )?;
 
     install_agents(
         &home,
@@ -335,6 +365,8 @@ fn install_agents(
             AgentTarget::Claude => install_claude(root, scope, overwrite, log)?,
             AgentTarget::Cursor => install_cursor(root, scope, overwrite, log)?,
             AgentTarget::OpenCode => install_opencode(root, scope, overwrite, log)?,
+            AgentTarget::Hermes => install_shared_skill_agent(root, target, scope, overwrite, log)?,
+            AgentTarget::OpenClaw => install_openclaw(root, scope, overwrite, log)?,
             AgentTarget::Antigravity => install_antigravity(root, scope, overwrite, log)?,
             AgentTarget::Windsurf
             | AgentTarget::Copilot
@@ -347,7 +379,7 @@ fn install_agents(
 }
 
 fn expand_agent_targets(requested: &[AgentTarget]) -> Vec<AgentTarget> {
-    // ponytail: O(n²) contains-check, but n <= 5 agents; a set is not worth it.
+    // ponytail: O(n²) contains-check over a tiny fixed agent list; a set is not worth it.
     let mut targets: Vec<AgentTarget> = Vec::new();
     let push = |target: AgentTarget, targets: &mut Vec<AgentTarget>| {
         if !targets.contains(&target) {
@@ -394,6 +426,8 @@ fn ignore_project_agent_directories(
             AgentTarget::Codex
                 | AgentTarget::Cursor
                 | AgentTarget::OpenCode
+                | AgentTarget::Hermes
+                | AgentTarget::OpenClaw
                 | AgentTarget::Antigravity
         )
     }) {
@@ -433,6 +467,11 @@ fn ignore_project_agent_directories(
 fn write_config(root: &Path, config: &ForgeGuardConfig, log: &mut InstallLog) -> Result<()> {
     let path = root.join(".forgeguard/config.toml");
     if path.exists() {
+        let mut existing = ForgeGuardConfig::load(root)?;
+        if existing.reconcile_commands(&config.commands) > 0 {
+            existing.save(root)?;
+            record_path(root, &path, &mut log.written);
+        }
         return Ok(());
     }
     let content =
@@ -460,12 +499,15 @@ fn install_codex(
         overwrite,
         log,
     )?;
+    let stop = hook_command(CODEX_HOOK_COMMAND, scope);
+    let context = hook_command(CODEX_CONTEXT_HOOK_COMMAND, scope);
+    let scope_hook = hook_command(CODEX_SCOPE_HOOK_COMMAND, scope);
     install_grouped_hook(
         root,
         &root.join(".codex/hooks.json"),
         "Stop",
         None,
-        CODEX_HOOK_COMMAND,
+        &stop,
         log,
     )?;
     install_grouped_hook(
@@ -473,7 +515,7 @@ fn install_codex(
         &root.join(".codex/hooks.json"),
         "SessionStart",
         Some("startup|resume|compact"),
-        CODEX_CONTEXT_HOOK_COMMAND,
+        &context,
         log,
     )?;
     install_grouped_hook(
@@ -481,7 +523,7 @@ fn install_codex(
         &root.join(".codex/hooks.json"),
         "PreToolUse",
         Some("apply_patch|Edit|Write"),
-        CODEX_SCOPE_HOOK_COMMAND,
+        &scope_hook,
         log,
     )
 }
@@ -506,12 +548,15 @@ fn install_claude(
         overwrite,
         log,
     )?;
+    let stop = hook_command(CLAUDE_HOOK_COMMAND, scope);
+    let context = hook_command(CLAUDE_CONTEXT_HOOK_COMMAND, scope);
+    let scope_hook = hook_command(CLAUDE_SCOPE_HOOK_COMMAND, scope);
     install_grouped_hook(
         root,
         &root.join(".claude/settings.json"),
         "Stop",
         None,
-        CLAUDE_HOOK_COMMAND,
+        &stop,
         log,
     )?;
     install_grouped_hook(
@@ -519,7 +564,7 @@ fn install_claude(
         &root.join(".claude/settings.json"),
         "SessionStart",
         Some("startup|resume|compact"),
-        CLAUDE_CONTEXT_HOOK_COMMAND,
+        &context,
         log,
     )?;
     install_grouped_hook(
@@ -527,7 +572,7 @@ fn install_claude(
         &root.join(".claude/settings.json"),
         "UserPromptSubmit",
         None,
-        CLAUDE_CONTEXT_HOOK_COMMAND,
+        &context,
         log,
     )?;
     install_grouped_hook(
@@ -535,7 +580,7 @@ fn install_claude(
         &root.join(".claude/settings.json"),
         "PreToolUse",
         Some("Edit|Write|MultiEdit|NotebookEdit"),
-        CLAUDE_SCOPE_HOOK_COMMAND,
+        &scope_hook,
         log,
     )
 }
@@ -558,21 +603,17 @@ fn install_cursor(
         log,
     )?;
     let path = root.join(".cursor/hooks.json");
-    install_cursor_hook(root, &path, "stop", None, CURSOR_HOOK_COMMAND, log)?;
-    install_cursor_hook(
-        root,
-        &path,
-        "sessionStart",
-        None,
-        CURSOR_CONTEXT_HOOK_COMMAND,
-        log,
-    )?;
+    let stop = hook_command(CURSOR_HOOK_COMMAND, scope);
+    let context = hook_command(CURSOR_CONTEXT_HOOK_COMMAND, scope);
+    let scope_hook = hook_command(CURSOR_SCOPE_HOOK_COMMAND, scope);
+    install_cursor_hook(root, &path, "stop", None, &stop, log)?;
+    install_cursor_hook(root, &path, "sessionStart", None, &context, log)?;
     install_cursor_hook(
         root,
         &path,
         "preToolUse",
         Some("Write|StrReplace|Delete|ApplyPatch"),
-        CURSOR_SCOPE_HOOK_COMMAND,
+        &scope_hook,
         log,
     )
 }
@@ -595,6 +636,126 @@ fn install_opencode(
     };
     write_file(root, &policy_path, AGENTS_TEMPLATE, overwrite, log)?;
     install_skill(root, skill_directory, overwrite, log)
+}
+
+fn install_shared_skill_agent(
+    root: &Path,
+    target: AgentTarget,
+    scope: InstallScope,
+    overwrite: bool,
+    log: &mut InstallLog,
+) -> Result<()> {
+    let skill_directory = match (target, scope) {
+        (AgentTarget::Hermes, InstallScope::Global) => ".hermes/skills/forgeguard-engineering",
+        (AgentTarget::OpenClaw, InstallScope::Global) => ".openclaw/skills/forgeguard-engineering",
+        (_, InstallScope::Project) => ".agents/skills/forgeguard-engineering",
+        _ => unreachable!("only Hermes and OpenClaw use this installer"),
+    };
+    if matches!(scope, InstallScope::Project) {
+        write_file(
+            root,
+            &root.join("AGENTS.md"),
+            AGENTS_TEMPLATE,
+            overwrite,
+            log,
+        )?;
+    }
+    install_skill(root, skill_directory, overwrite, log)
+}
+
+fn install_openclaw(
+    root: &Path,
+    scope: InstallScope,
+    overwrite: bool,
+    log: &mut InstallLog,
+) -> Result<()> {
+    if matches!(scope, InstallScope::Project) {
+        return install_shared_skill_agent(root, AgentTarget::OpenClaw, scope, overwrite, log);
+    }
+    install_skill(
+        root,
+        ".openclaw/skills/forgeguard-engineering",
+        overwrite,
+        log,
+    )?;
+    for (relative, content) in [
+        ("openclaw.plugin.json", OPENCLAW_PLUGIN_MANIFEST),
+        ("package.json", OPENCLAW_PLUGIN_PACKAGE),
+        ("index.js", OPENCLAW_PLUGIN_ENTRY),
+    ] {
+        write_file(
+            root,
+            &root.join(".openclaw/extensions/forgeguard").join(relative),
+            content,
+            overwrite,
+            log,
+        )?;
+    }
+    configure_openclaw_plugin(root, log)
+}
+
+fn configure_openclaw_plugin(root: &Path, log: &mut InstallLog) -> Result<()> {
+    let path = root.join(".openclaw/openclaw.json");
+    let mut document = read_json_object(&path).with_context(|| {
+        format!(
+            "cannot enable the ForgeGuard OpenClaw plugin in {}; preserve the file and enable `forgeguard` manually",
+            path.display()
+        )
+    })?;
+    let original = document.clone();
+    let plugins = object_field(&mut document, "plugins", &path)?;
+    if let Some(allow) = plugins.get_mut("allow") {
+        let allow = allow.as_array_mut().with_context(|| {
+            format!(
+                "expected `plugins.allow` to be an array in {}",
+                path.display()
+            )
+        })?;
+        if !allow
+            .iter()
+            .any(|value| value.as_str() == Some("forgeguard"))
+        {
+            allow.push(json!("forgeguard"));
+        }
+    }
+    let entries = plugins
+        .entry("entries")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .with_context(|| {
+            format!(
+                "expected `plugins.entries` to be an object in {}",
+                path.display()
+            )
+        })?;
+    let forgeguard = entries
+        .entry("forgeguard")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .with_context(|| {
+            format!(
+                "expected `plugins.entries.forgeguard` to be an object in {}",
+                path.display()
+            )
+        })?;
+    forgeguard.insert("enabled".to_owned(), json!(true));
+    let hooks = forgeguard
+        .entry("hooks")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .with_context(|| {
+            format!(
+                "expected `plugins.entries.forgeguard.hooks` to be an object in {}",
+                path.display()
+            )
+        })?;
+    hooks.insert("allowConversationAccess".to_owned(), json!(true));
+    hooks.insert("allowPromptInjection".to_owned(), json!(true));
+    if document == original {
+        record_path(root, &path, &mut log.skipped);
+        return Ok(());
+    }
+    write_json_document(root, &path, &document, &mut log.written)
 }
 
 fn install_antigravity(
@@ -796,10 +957,18 @@ fn install_grouped_hook(
     log: &mut InstallLog,
 ) -> Result<()> {
     let mut document = read_json_object(path)?;
-    if document
-        .pointer(&format!("/hooks/{event}"))
-        .is_some_and(|hooks| contains_hook_command(hooks, command))
-    {
+    let event_pointer = format!("/hooks/{event}");
+    let existing = document.pointer(&event_pointer);
+    let base_command = command.strip_suffix(" --global").unwrap_or(command);
+    let exact = existing.is_some_and(|hooks| contains_hook_command(hooks, command));
+    let matching = existing.map_or(0, |hooks| hook_command_count(hooks, base_command));
+    if exact && matching == 1 {
+        record_path(root, path, &mut log.skipped);
+        return Ok(());
+    }
+    if command.ends_with(" --global") && matching > 0 {
+        remove_grouped_hook_commands(&mut document, event, base_command);
+    } else if matching > 0 {
         record_path(root, path, &mut log.skipped);
         return Ok(());
     }
@@ -826,7 +995,18 @@ fn install_cursor_hook(
     log: &mut InstallLog,
 ) -> Result<()> {
     let mut document = read_json_object(path)?;
-    if contains_string(&document, command) {
+    let event_pointer = format!("/hooks/{event}");
+    let existing = document.pointer(&event_pointer);
+    let base_command = command.strip_suffix(" --global").unwrap_or(command);
+    let exact = existing.is_some_and(|hooks| contains_string(hooks, command));
+    let matching = existing.map_or(0, |hooks| hook_command_count(hooks, base_command));
+    if exact && matching == 1 {
+        record_path(root, path, &mut log.skipped);
+        return Ok(());
+    }
+    if command.ends_with(" --global") && matching > 0 {
+        remove_cursor_hook_commands(&mut document, event, base_command);
+    } else if matching > 0 {
         record_path(root, path, &mut log.skipped);
         return Ok(());
     }
@@ -972,6 +1152,52 @@ fn contains_hook_command(value: &Value, expected: &str) -> bool {
             .any(|value| contains_hook_command(value, expected)),
         _ => false,
     }
+}
+
+fn hook_command_count(value: &Value, expected: &str) -> usize {
+    match value {
+        Value::String(value) => usize::from(value.contains(expected)),
+        Value::Array(values) => values
+            .iter()
+            .map(|value| hook_command_count(value, expected))
+            .sum(),
+        Value::Object(values) => values
+            .values()
+            .map(|value| hook_command_count(value, expected))
+            .sum(),
+        _ => 0,
+    }
+}
+
+fn remove_grouped_hook_commands(document: &mut Value, event: &str, command: &str) {
+    let Some(handlers) = document
+        .pointer_mut(&format!("/hooks/{event}"))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for handler in handlers.iter_mut() {
+        let Some(hooks) = handler.get_mut("hooks").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        hooks.retain(|hook| hook_command_count(hook, command) == 0);
+    }
+    handlers.retain(|handler| {
+        handler
+            .get("hooks")
+            .and_then(Value::as_array)
+            .map_or(true, |hooks| !hooks.is_empty())
+    });
+}
+
+fn remove_cursor_hook_commands(document: &mut Value, event: &str, command: &str) {
+    let Some(handlers) = document
+        .pointer_mut(&format!("/hooks/{event}"))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    handlers.retain(|handler| hook_command_count(handler, command) == 0);
 }
 
 fn write_json_document(

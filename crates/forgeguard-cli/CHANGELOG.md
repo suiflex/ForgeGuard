@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.13.1](https://github.com/suiflex/ForgeGuard/compare/v0.13.0...v0.13.1) (2026-08-22)
+
+### Features
+
+* expand General Guard with open-ended role profiles, acceptance coverage, evidence provenance, artifacts, and MCP/resource scope controls
+* add global Hermes and OpenClaw integrations
+* add changed-code security, coverage, duplication, SARIF, and opt-in supply-chain quality gates
+
+### Bug Fixes
+
+* prevent global General Guard hooks from duplicating project Code Guard lifecycle events
+* preserve disabled global focus settings, repository-scoped Code Guard modes, unrelated hooks, and existing configuration during upgrades
+
+### Documentation
+
+* make the README problem-first and add concrete contributor onboarding, roadmap lanes, and GitHub contribution forms
+
 ## [0.13.0](https://github.com/suiflex/ForgeGuard/compare/v0.12.0...v0.13.0) (2026-08-17)
 
 

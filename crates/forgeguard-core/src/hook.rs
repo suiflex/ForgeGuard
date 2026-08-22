@@ -205,7 +205,7 @@ fn evaluate_general_stop_hook(
     let decision = match task.status {
         TaskStatus::Active if focus.enabled => active_auto_poke(root, &mut task, focus, "work")?
             .unwrap_or_else(|| HookDecision::Block(incomplete_task_message(session))),
-        TaskStatus::Active => HookDecision::Block(incomplete_task_message(session)),
+        TaskStatus::Active => HookDecision::Pass,
         TaskStatus::Ready if focus.enabled => {
             match ready_auto_poke(root, &mut task, focus, &GENERAL_AUTO_POKE_PHASES, "work")? {
                 Some(decision) => decision,
@@ -1638,5 +1638,34 @@ mod tests {
             .expect("task");
         assert_eq!(task.auto_pokes, 0);
         assert_eq!(task.status, TaskStatus::Blocked);
+    }
+
+    #[test]
+    fn disabled_global_focus_bypasses_general_guard_lifecycle() {
+        let directory = tempdir().expect("temporary directory");
+        start_task(
+            directory.path(),
+            "disabled-focus",
+            "Review a non-code artifact",
+            &[],
+            false,
+        )
+        .expect("start task");
+        let focus = FocusConfig {
+            enabled: false,
+            ..FocusConfig::default()
+        };
+
+        let (decision, _) = evaluate_general_stop_hook(directory.path(), "disabled-focus", &focus)
+            .expect("evaluate General Guard");
+
+        assert_eq!(decision, HookDecision::Pass);
+        assert_eq!(
+            task_state(directory.path(), "disabled-focus")
+                .expect("read task")
+                .expect("task")
+                .status,
+            TaskStatus::Active
+        );
     }
 }

@@ -69,10 +69,11 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Check or change ForgeGuard mode.
+    /// Check or change Code Guard mode for an initialized repository.
     Mode {
         #[arg(value_enum)]
         mode: Option<ModeArg>,
+        /// Deprecated compatibility flag; Code Guard modes are repository-only.
         #[arg(long)]
         global: bool,
         #[arg(long)]
@@ -396,9 +397,6 @@ fn execute() -> Result<ExitCode> {
                             &report.files_skipped,
                         );
                     }
-                    if io::stdin().is_terminal() {
-                        configure_mode_interactive(&home, true)?;
-                    }
                 }
             } else {
                 let report = initialize_project(&root, &options)?;
@@ -436,7 +434,7 @@ fn execute() -> Result<ExitCode> {
                     }
                     print!("{}", render_detection(&report.detection));
                     if io::stdin().is_terminal() {
-                        configure_mode_interactive(&root, false)?;
+                        configure_mode_interactive(&root)?;
                     }
                 }
             }
@@ -649,57 +647,52 @@ fn execute_update(
 }
 
 fn execute_mode(root: &Path, mode: Option<ModeArg>, global: bool, json: bool) -> Result<ExitCode> {
-    let target = if global {
-        home_directory()?
-    } else {
-        root.to_path_buf()
-    };
-    let mut config = load_or_create_config(&target, global)?;
+    if global {
+        bail!(
+            "`forgeguard mode --global` is no longer supported; lite/default/strict apply only to Code Guard repositories. Run `forgeguard mode <mode>` inside an initialized repository"
+        );
+    }
+    if !root.join(CONFIG_FILE).is_file() {
+        bail!("Code Guard mode requires an initialized repository; run `forgeguard init` first");
+    }
+    let mut config = ForgeGuardConfig::load(root)?;
     let selected = match mode {
         Some(mode) => mode.into(),
         None if io::stdin().is_terminal() && !json => prompt_for_mode(config.mode)?,
         None => config.mode,
     };
     config.mode = selected;
-    save_config(&target, global, &config)?;
+    config.save(root)?;
 
     if json {
         println!(
             "{}",
             serde_json::json!({
-                "scope": if global { "global" } else { "project" },
+                "scope": "project",
                 "mode": config.mode.as_str(),
             })
         );
     } else {
-        println!(
-            "ForgeGuard {} mode set to {}.",
-            if global { "global" } else { "project" },
-            config.mode.as_str()
-        );
+        println!("ForgeGuard project mode set to {}.", config.mode.as_str());
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn configure_mode_interactive(target: &Path, global: bool) -> Result<()> {
-    let mut config = load_or_create_config(target, global)?;
+fn configure_mode_interactive(target: &Path) -> Result<()> {
+    let mut config = ForgeGuardConfig::load(target)?;
     println!();
     let mode = prompt_for_mode(config.mode)?;
     config.mode = mode;
-    save_config(target, global, &config)?;
-    println!(
-        "ForgeGuard {} mode set to {}.",
-        if global { "global" } else { "project" },
-        config.mode.as_str()
-    );
+    config.save(target)?;
+    println!("ForgeGuard project mode set to {}.", config.mode.as_str());
     Ok(())
 }
 
 fn prompt_for_mode(default: GuardMode) -> Result<GuardMode> {
-    println!("ForgeGuard mode");
+    println!("Code Guard mode");
     println!("  1) default - token-friendly; report static findings, block only failed required commands");
-    println!("  2) lite    - report-only; never blocks");
-    println!("  3) strict  - block failed required commands and error-level findings");
+    println!("  2) lite    - static report-only; required command failures still block");
+    println!("  3) strict  - block failed required commands and warning/error findings");
     print!("Choose mode [{}]: ", default.as_str());
     io::stdout().flush()?;
 
@@ -1510,12 +1503,72 @@ fn render_init_result(agents: &[AgentTarget], written: &[String], skipped: &[Str
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs, process,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
     use clap::Parser;
+    use forgeguard_core::{config::ForgeGuardConfig, GuardMode};
 
     use super::{
-        agent_menu_rows, agents_from_names, agents_from_rows, summarize_paths, AgentTarget,
-        BaselineCommands, Cli, Commands, ConfigCommands, OutputArg,
+        agent_menu_rows, agents_from_names, agents_from_rows, execute_mode, summarize_paths,
+        AgentTarget, BaselineCommands, Cli, Commands, ConfigCommands, ModeArg, OutputArg,
     };
+
+    fn temporary_project(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "forgeguard-{label}-{}-{}",
+            process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should follow the Unix epoch")
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn code_guard_mode_requires_an_initialized_repository() {
+        let root = temporary_project("uninitialized-mode");
+        fs::create_dir_all(&root).expect("temporary directory should be created");
+
+        let error = execute_mode(&root, Some(ModeArg::Strict), false, true)
+            .expect_err("an uninitialized repository must be rejected");
+
+        assert!(error.to_string().contains("run `forgeguard init` first"));
+        fs::remove_dir_all(root).expect("temporary directory should be removed");
+    }
+
+    #[test]
+    fn code_guard_mode_is_saved_only_in_the_repository() {
+        let root = temporary_project("repository-mode");
+        fs::create_dir_all(&root).expect("temporary directory should be created");
+        ForgeGuardConfig::new("mode-test", vec![])
+            .save(&root)
+            .expect("project config should be created");
+
+        execute_mode(&root, Some(ModeArg::Strict), false, true)
+            .expect("repository mode should be updated");
+
+        assert_eq!(
+            ForgeGuardConfig::load(&root)
+                .expect("project config should load")
+                .mode,
+            GuardMode::Strict
+        );
+        fs::remove_dir_all(root).expect("temporary directory should be removed");
+    }
+
+    #[test]
+    fn legacy_global_mode_flag_is_parseable_but_rejected() {
+        let cli = Cli::try_parse_from(["forgeguard", "mode", "strict", "--global"])
+            .expect("legacy command shape should remain parseable");
+        assert!(matches!(cli.command, Commands::Mode { global: true, .. }));
+
+        let error = execute_mode(std::path::Path::new("."), Some(ModeArg::Strict), true, true)
+            .expect_err("global Code Guard mode must be rejected");
+        assert!(error.to_string().contains("Code Guard repositories"));
+    }
 
     #[test]
     fn maps_checked_names_in_menu_order() {

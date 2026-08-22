@@ -75,9 +75,9 @@ A blocked gate may cause the host agent to use another turn to fix real failures
 - Compiler/linter delegation for dead code, unused imports, nullability, resource lifetime, and ecosystem-specific correctness. Optional dependency-audit, license-inventory/policy, and SBOM commands are discovered but disabled by default so realtime gates make no network calls.
 - Clean-as-you-code review at added/edited-line scope, with optional Git base-ref comparison and changed-line LCOV policy.
 - Automatic formatter, linter, type-check, test, and build command discovery.
-- `default`, `lite`, and `strict` operating modes with project and global persistence.
+- Repository-scoped `default`, `lite`, and `strict` Code Guard modes.
 - Committed finding baselines for adopting strict gates without accepting new debt.
-- Interactive mode selection during `forgeguard init` and via `forgeguard mode`.
+- Interactive mode selection during project `forgeguard init` and via `forgeguard mode`.
 - Human-readable, JSON, and SARIF 2.1.0 reports.
 
 ## Install
@@ -476,7 +476,8 @@ path, and shell sanitizers where possible.
 
 ### Modes
 
-ForgeGuard supports three operating modes:
+Code Guard supports three repository-scoped operating modes after `forgeguard init` creates
+`.forgeguard/config.toml`:
 
 - `default`: failed required commands block; static findings block only when a rule sets `block = true`.
 - `lite`: report-only mode for baselining or cleanup work. Static findings do not block.
@@ -484,7 +485,12 @@ ForgeGuard supports three operating modes:
 
 Version 1 configs preserve the old Strict behavior that blocks only Error findings. Run `forgeguard config migrate` to opt into version 2 policy; older `mode = "guard"` values still load as `strict`.
 
-Per-rule `enabled`, `severity`, and `block` override global policy. `Lite` always keeps static findings nonblocking. Required command failures block in every mode.
+Per-rule `enabled`, `severity`, and `block` override mode policy. `Lite` always keeps static findings nonblocking. Required command failures block in every mode.
+
+These modes do not apply to General Guard or global agent installation. For upgrade compatibility,
+the legacy `forgeguard mode --global` command shape is still recognized but returns repository-mode
+migration guidance. Existing `mode` fields in `~/.forgeguard/config.toml` remain readable, and global
+installation or refresh does not rewrite that file; the field no longer controls guard behavior.
 
 With a global hook installed, General Guard applies task state, scope checks, evidence, and bounded auto-poke without project initialization or repository commands. `forgeguard init` activates Code Guard: the same focus contract plus `inspect → design → implement → test → review → verify`, changed-source scanning, configured checks, and reports. Each continuation creates a new host request and consumes model tokens, so `max_auto_pokes` defaults to three and has a hard cap of five. Pending todos, confidence below `min_confidence`, or goal-contract completeness below `min_hill_climbability` keep the task active. Hill-climbability is a deterministic 0–100 completeness score: metric, baseline, target, guardrail, and verification contribute 20 points each. ForgeGuard does not guess these fields from prose. `forgeguard task start --semantic` only asks a supported host to use its native goal evaluator.
 
@@ -502,7 +508,7 @@ forgeguard task todo --session "$SESSION" --done 1
 forgeguard task ready --session "$SESSION" --confidence 90 --evidence "benchmark: p95 284 ms"
 ```
 
-Set project mode:
+Set repository mode:
 
 ```bash
 forgeguard mode default
@@ -510,17 +516,10 @@ forgeguard mode lite
 forgeguard mode strict
 ```
 
-Set user-level/global mode:
-
-```bash
-forgeguard mode strict --global
-```
-
 Inspect mode as JSON:
 
 ```bash
 forgeguard mode --json
-forgeguard mode --global --json
 ```
 
 When run in a terminal without an explicit mode, `forgeguard mode` opens the same interactive mode picker used by `forgeguard init`. Non-TTY calls and `--json` never prompt, so scripts and CI do not hang.
@@ -533,7 +532,7 @@ When run in a terminal without an explicit mode, `forgeguard mode` opens the sam
 | `forgeguard detect` | Detect languages, frameworks, database tools, tests, and commands. |
 | `forgeguard capabilities` | Show workflow, parser, structural-rule, and semantic-pack coverage. |
 | `forgeguard doctor` | Verify configuration, Git, and required local tools. |
-| `forgeguard mode` | Check or change project/global operating mode. |
+| `forgeguard mode` | Check or change the current repository's Code Guard mode. |
 | `forgeguard config migrate` | Upgrade config v1 to v2 and append newly detected command presets without resetting existing commands or focus settings. |
 | `forgeguard gate` | Run static rules and configured quality commands; `--changed --base <ref>` scopes findings to new code. |
 | `forgeguard review` | Scan added/edited Git lines without running commands; `--base <ref>` compares a branch or pull request. |

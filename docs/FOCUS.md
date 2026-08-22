@@ -1,6 +1,6 @@
 # Focus, auto-poke, and hill-climbability
 
-When a global ForgeGuard hook is installed, General Guard provides objective, TODO, evidence, scope, and bounded auto-poke supervision in any working directory. It supports non-code work without project initialization.
+When a global ForgeGuard hook is installed, General Guard provides objective, profile, acceptance criteria, TODO, evidence provenance, file/resource scope, and bounded auto-poke supervision in any working directory. It supports non-code work without project initialization.
 
 `forgeguard init` separately activates Code Guard through `.forgeguard/config.toml`. Code Guard preserves `inspect → design → implement → test → review → verify` and adds source scanning, configured commands, and local reports. General Guard never executes repository commands or writes project configuration/reports.
 
@@ -9,7 +9,7 @@ When a global ForgeGuard hook is installed, General Guard provides objective, TO
 ForgeGuard uses three hooks where the host supports them:
 
 - `SessionStart` restores the session objective and active continuation after startup, resume, or compaction.
-- `PreToolUse` warns when an explicit edit path falls outside declared scope.
+- `PreToolUse` warns when an explicit edit path or recognized tool resource falls outside declared scope.
 - `Stop` always checks registered task state, evidence, and continuation limits; Code Guard additionally runs repository gates.
 
 Auto-poke itself is implemented by the `Stop` hook. A block response makes the host submit a new model request with the next instruction. Headless operation uses the same path when the host executes lifecycle hooks in headless mode.
@@ -20,11 +20,12 @@ OpenCode receives the shared policy and skill, but ForgeGuard does not claim aut
 
 Each registered host conversation gets a separate task file under `.forgeguard/cache/tasks/`, even without project initialization. State contains:
 
-- exact objective and repository-relative scope prefixes;
+- exact objective, open-ended profile, repository-relative path prefixes, and typed non-file resource prefixes;
 - metric, baseline, target, guardrails, and verification contract;
+- acceptance criteria and their submitted evidence coverage;
 - ordered todos and completion status;
 - advisory model-confidence history;
-- evidence, current status, auto-poke count, and blocker.
+- evidence summaries, declared provenance, artifact references, current status, auto-poke count, and blocker.
 
 Task and Stop caches are excluded from worktree fingerprints and version control.
 
@@ -36,6 +37,7 @@ model ends turn
   → abstract goal: request measurable contract
   → incomplete todos: continue next todo
   → todos complete: require evidence and confidence
+  → acceptance criteria: require explicit evidence mapping
   → Code Guard only: gate failure continues from exact failure
   → General or Code Guard: mode-appropriate evidence/review/final verification poke
   → limits reached: stop with blocker
@@ -57,6 +59,8 @@ ForgeGuard does not infer whether prose sounds measurable. It scores explicit co
 - at least one verification method: 20 points.
 
 The score measures contract completeness, not semantic quality. A 100/100 contract can still contain a bad metric; executed evidence and repository gates remain authoritative.
+
+For work without a natural performance metric, use an observable completion measure rather than inventing precision. A product brief can measure approved acceptance criteria, content can measure verified claims and editorial checks, and an investigation can measure hypotheses resolved with sources. Baseline is the known current state; target is the desired verified state.
 
 Bad objective:
 
@@ -95,6 +99,31 @@ forgeguard task ready --session "$SESSION" \
 ```
 
 Confidence is model-reported and advisory. It never replaces tool output, tests, benchmarks, or the ForgeGuard gate.
+
+## Profiles, acceptance, and resource scope
+
+`--profile` accepts any lowercase name. Product, QA, security, business-analysis, database, architecture, content-creator, and statistics aliases select specialized review phases; every other name uses the general evidence/review/final-verification phases. This keeps profiles extensible without turning every profession into a compiled enum.
+
+Non-general profiles require at least one `--acceptance` criterion. `task ready` must map submitted evidence to every 1-based criterion with `--criterion`. It also requires declared provenance through `--source <kind:value>`; optional `--artifact <kind:value>` values retain references to traces, reports, screenshots, plans, or source notes. ForgeGuard validates and records this metadata but does not claim that a user-provided source string proves tool execution.
+
+`--scope` remains a repository-relative file prefix. `--resource` adds non-file boundaries such as `mcp:playwright`, `url:https://staging.example.com`, `database:production/analytics`, or `table:orders`. Pre-tool hooks recognize tool names and common URL, database, table, schema, environment, server, host, and project arguments. They warn on drift; host authorization and destructive-action confirmation remain authoritative.
+
+Example:
+
+```bash
+forgeguard task start --session "$SESSION" --profile content-creator \
+  --objective "Publish a sourced launch article" \
+  --metric "verified factual claims" --baseline "0 verified" --target "all claims verified" \
+  --guardrail "no unlicensed media" --verification "editorial source review" \
+  --resource "url:https://docs.example.com" \
+  --acceptance "every factual claim has a source" \
+  --acceptance "headline and call to action match the brief" \
+  --todo "draft and verify the article"
+forgeguard task todo --session "$SESSION" --done 1
+forgeguard task ready --session "$SESSION" --confidence 90 \
+  --source "human:editorial-review" --artifact "artifact:launch-article.md" \
+  --criterion 1 --criterion 2 --evidence "editor approved the sourced final draft"
+```
 
 ## Configuration
 

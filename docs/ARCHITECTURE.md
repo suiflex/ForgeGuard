@@ -55,16 +55,16 @@ Source walking honors Git ignore files and excludes generated or dependency dire
 ## Hook policy
 
 - Hooks merge into existing JSON without replacing unrelated settings.
-- General Guard is available through global hooks without project initialization: objective, TODO, evidence, scope warnings, and auto-poke run without repository scanning or configured commands.
+- General Guard is available through global hooks without project initialization: objective, open-ended profile, acceptance coverage, TODO, declared evidence provenance, file/resource scope warnings, and role-aware auto-poke run without repository scanning or configured commands.
 - Code Guard activates only when `.forgeguard/config.toml` exists. It adds the `inspect → design → implement → test → review → verify` workflow, changed-source scanning, configured commands, reports, and nested-repository inheritance. A detected language is never consent to execute repository policy.
 - A repeated stop decision for unchanged repository and task state is replayed for a short window, so a duplicated hook registration cannot consume the retry, no-progress, or auto-poke budget.
 - Stop-hook gates skip the configured commands when every changed path is documentation or an asset; the scanner still runs.
 - `forgeguard init` writes a stop-hook timeout that covers the configured command budget.
 - Claude and Codex return `decision: block`; Cursor returns `followup_message`; Antigravity returns `decision: continue`.
 - Session start/resume/compaction hooks restore the active objective where the host protocol supports context injection; Antigravity injects it on the first model invocation of an execution.
-- Pre-tool hooks warn when an edit path falls outside explicitly declared repository-relative prefixes. ForgeGuard never infers scope from prompt text.
+- Pre-tool hooks warn when an edit path or recognized MCP/tool resource falls outside explicitly declared prefixes. File and non-file dimensions are enforced only when their corresponding scopes are declared; ForgeGuard never infers scope from prompt text.
 - Blocked stops use per-session retry and no-progress limits. Exhaustion stops with an explicit blocker instead of claiming completion or looping forever.
-- Default-on auto-poke returns the host agent to incomplete todos, low-confidence evidence, or fixed TODO/test/review/contract/final-verification phases. The same Stop-hook protocol works in headless mode where the host executes lifecycle hooks; each continuation is a new model request, and the hard limit is five. Configuration can explicitly opt out.
+- Default-on auto-poke returns the host agent to incomplete todos, low-confidence evidence, uncovered acceptance criteria, or profile-selected review phases. Unknown profiles use the general phases. The same Stop-hook protocol works in headless mode where the host executes lifecycle hooks; each continuation is a new model request, and the hard limit is five. Configuration can explicitly opt out.
 - Hill-climbability is computed without an LLM from five explicit goal-contract fields: metric, baseline, target, guardrail, and verification. Missing fields trigger reframing instead of speculative prose scoring.
 - Deterministic focus state uses no LLM calls. Semantic evaluation is opt-in and delegated to native host goal mode; executed checks remain authoritative.
 - Agent hook trust remains controlled by each host application.

@@ -66,11 +66,14 @@ A blocked gate may cause the host agent to use another turn to fix real failures
 - Claude Code `CLAUDE.md` plus project skills.
 - Cursor always-on rule plus shared project skills.
 - OpenCode `AGENTS.md` plus shared project skills.
+- Hermes `AGENTS.md` plus project and global skills.
+- OpenClaw `AGENTS.md` plus project and global skills.
 - Antigravity rule, shared project skill, and native `Stop` hook.
 - Token-efficient `Stop` hooks: silent pass, bounded failure feedback, diff cache, and local full report.
 - Cross-agent material-ambiguity guard: native context hooks for Claude, Codex, Cursor, and Antigravity; shared skill fallback for OpenCode.
-- Session-scoped objective, todo, confidence, hill-climbability, auto-poke, resume, and scope-drift state.
-- One `forgeguard-engineering` skill with conditional clean-code, algorithm, backend, frontend, mobile, database, AI, and testing references.
+- Session-scoped objective, profile, acceptance criteria, todo, structured evidence provenance, confidence, hill-climbability, auto-poke, resume, and file/resource scope-drift state.
+- Open-ended General Guard profiles with built-in review phases for product, QA, security, business analysis, database administration, architecture, content creation, and statistics.
+- One `forgeguard-engineering` skill with conditional code, product, QA, security, analysis, architecture, content, statistics, database, AI, and testing references.
 - Static rules for nested iteration, repeated linear lookup, sorting in loops, database/network I/O in loops, unbounded fan-out, complexity, hardcoded credentials, bounded taint flow, weak crypto/TLS, unsafe deserialization, XSS/path sinks, swallowed exceptions, access-control hotspots, `SELECT *`, and exact/renamed/same-operation duplicates.
 - Compiler/linter delegation for dead code, unused imports, nullability, resource lifetime, and ecosystem-specific correctness. Optional dependency-audit, license-inventory/policy, and SBOM commands are discovered but disabled by default so realtime gates make no network calls.
 - Clean-as-you-code review at added/edited-line scope, with optional Git base-ref comparison and changed-line LCOV policy.
@@ -360,6 +363,8 @@ targets add no directory, so they add no ignore entry.
    | Claude Code | `.claude/` |
    | Cursor | `.cursor/`, `.cursorrules` |
    | OpenCode | `.opencode/`, `opencode.json` |
+   | Hermes | `.hermes/` |
+   | OpenClaw | `.openclaw/`, `openclaw.json` |
    | Antigravity | `.agents/rules/`, `.agents/hooks.json`, `.agent/rules/` |
    | Windsurf / Devin | `.windsurf/`, `.devin/`, `.windsurfrules` |
    | GitHub Copilot | `.github/copilot-instructions.md`, `.github/instructions/` |
@@ -389,6 +394,8 @@ what was installed.
 | Cursor | `cursor` | `.cursor/rules` | `.agents/skills` | `stop` hook |
 | Antigravity | `antigravity` | `.agents/rules` | `.agents/skills` | Native `Stop` hook |
 | OpenCode | `opencode` | `AGENTS.md` | `.agents/skills` | Policy-enforced gate |
+| Hermes | `hermes` | `AGENTS.md` | `.agents/skills` | Policy-enforced gate |
+| OpenClaw | `openclaw` | `AGENTS.md` | `.agents/skills` | `before_agent_finalize` plugin hook |
 | Windsurf / Devin | `windsurf` | `AGENTS.md` | — | Policy-enforced gate |
 | GitHub Copilot | `copilot` | `AGENTS.md` | — | Policy-enforced gate |
 | Cline | `cline` | `AGENTS.md` | — | Policy-enforced gate |
@@ -403,6 +410,12 @@ User-level rules are not shared the same way, so `--global` follows each agent's
 documented path instead: Cline reads `~/.agents/AGENTS.md`, Windsurf/Devin reads
 `~/.codeium/windsurf/memories/global_rules.md`, and Roo reads `~/.roo/rules/`. Copilot
 instructions are repository-scoped, so a global install writes nothing for it.
+Hermes and OpenClaw receive the engineering skill in their native global directories,
+`~/.hermes/skills/` and `~/.openclaw/skills/`, respectively. OpenClaw also receives an
+enabled native plugin under `~/.openclaw/extensions/forgeguard/`; it restores task context
+before each prompt and runs the completion gate through `before_agent_finalize`. Restart the
+OpenClaw gateway after installation. Hermes' completion hooks are observers, so its global
+integration remains policy-enforced rather than claiming a blocking hook.
 
 [OpenCode officially discovers](https://opencode.ai/docs/skills) both `AGENTS.md` and `.agents/skills`. Its current plugin lifecycle exposes `session.idle` only after the agent loop stops, so ForgeGuard does not claim a reliable blocking `Stop` hook there. The compact policy requires `forgeguard gate --changed --output compact` before completion. [Antigravity provides a native blocking `Stop` protocol](https://antigravity.google/docs/hooks), so failures automatically return the agent to its execution loop.
 
@@ -498,7 +511,7 @@ reads only its General Guard lifecycle settings from `[focus]`: `enabled`, `auto
 `max_retries` and `no_progress_limit` remain Code Guard-only. Later global installs and
 refreshes preserve the file exactly.
 
-With a global hook installed, General Guard applies task state, scope checks, evidence, and bounded auto-poke without project initialization or repository commands. `forgeguard init` activates Code Guard: the same focus contract plus `inspect → design → implement → test → review → verify`, changed-source scanning, configured checks, and reports. Each continuation creates a new host request and consumes model tokens, so `max_auto_pokes` defaults to three and has a hard cap of five. Pending todos, confidence below `min_confidence`, or goal-contract completeness below `min_hill_climbability` keep the task active. Hill-climbability is a deterministic 0–100 completeness score: metric, baseline, target, guardrail, and verification contribute 20 points each. ForgeGuard does not guess these fields from prose. `forgeguard task start --semantic` only asks a supported host to use its native goal evaluator.
+With a global hook installed, General Guard applies task state, role-aware review, acceptance coverage, file and non-file resource scope checks, declared evidence provenance, and bounded auto-poke without project initialization or repository commands. Profiles are open-ended, so `--profile content-creator`, `--profile statistician`, or a custom profession works without a new ForgeGuard release. `forgeguard init` activates Code Guard: the same focus contract plus `inspect → design → implement → test → review → verify`, changed-source scanning, configured checks, and reports. Each continuation creates a new host request and consumes model tokens, so `max_auto_pokes` defaults to three and has a hard cap of five. Pending todos, confidence below `min_confidence`, uncovered acceptance criteria, or goal-contract completeness below `min_hill_climbability` keep the task active. Hill-climbability is a deterministic 0–100 completeness score: metric, baseline, target, guardrail, and verification contribute 20 points each. ForgeGuard does not guess these fields from prose. `forgeguard task start --semantic` only asks a supported host to use its native goal evaluator.
 
 See [Focus, auto-poke, and hill-climbability](docs/FOCUS.md) for the lifecycle, headless behavior, token bounds, upgrade path, and examples.
 
@@ -512,6 +525,22 @@ forgeguard task start --session "$SESSION" \
   --todo "measure baseline" --todo "optimize endpoint"
 forgeguard task todo --session "$SESSION" --done 1
 forgeguard task ready --session "$SESSION" --confidence 90 --evidence "benchmark: p95 284 ms"
+```
+
+Example non-code task using Playwright MCP:
+
+```bash
+forgeguard task start --session "$SESSION" --profile qa \
+  --objective "Verify guest checkout on staging" \
+  --metric "checkout acceptance scenarios passed" --baseline "0 of 3" --target "3 of 3" \
+  --guardrail "do not create production orders" --verification "Playwright trace reviewed" \
+  --resource "mcp:playwright" --resource "url:https://staging.example.com/checkout" \
+  --acceptance "guest can place an order" --acceptance "declined payment shows a safe error" \
+  --todo "run guest checkout scenarios"
+forgeguard task todo --session "$SESSION" --done 1
+forgeguard task ready --session "$SESSION" --confidence 90 \
+  --source "mcp:playwright" --artifact "artifact:checkout-trace.zip" \
+  --criterion 1 --criterion 2 --evidence "3 scenarios passed on staging"
 ```
 
 Set repository mode:
@@ -543,9 +572,9 @@ When run in a terminal without an explicit mode, `forgeguard mode` opens the sam
 | `forgeguard gate` | Run static rules and configured quality commands; `--changed --base <ref>` scopes findings to new code. |
 | `forgeguard review` | Scan added/edited Git lines without running commands; `--base <ref>` compares a branch or pull request. |
 | `forgeguard baseline create` | Record current static findings so gates report only new findings. |
-| `forgeguard task start` | Register objective, goal metrics, todos, and optional scope prefixes. |
+| `forgeguard task start` | Register objective, open-ended profile, goal metrics, acceptance criteria, todos, file scopes, and non-file resources. |
 | `forgeguard task todo` | Add todos or mark 1-based todo indexes complete. |
-| `forgeguard task ready` | Submit exact evidence and optional model confidence before the completion gate. |
+| `forgeguard task ready` | Submit exact evidence, provenance, artifacts, acceptance coverage, and optional model confidence before the completion gate. |
 | `forgeguard task status` | Inspect session-scoped objective state. |
 | `forgeguard hook stop/context/scope` | Internal lifecycle adapters for completion, objective restoration, and scope warnings. |
 

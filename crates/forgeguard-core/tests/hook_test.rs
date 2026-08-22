@@ -2,9 +2,10 @@ use std::{fs, process::Command};
 
 use forgeguard_core::{
     evaluate_context_hook, evaluate_scope_hook, evaluate_stop_hook, mark_task_ready,
-    mark_task_ready_with_confidence, render_hook_decision, start_task, start_task_with_contract,
-    task_state, update_task_todos, CommandConfig, ForgeGuardConfig, GoalContract, GuardMode,
-    HookAgent, HookDecision, TaskStatus,
+    mark_task_ready_with_confidence, mark_task_ready_with_evidence, render_hook_decision,
+    start_task, start_task_with_contract, start_task_with_profile, task_state, update_task_todos,
+    CommandConfig, ForgeGuardConfig, GoalContract, GuardMode, HookAgent, HookDecision, TaskProfile,
+    TaskStatus,
 };
 use tempfile::tempdir;
 
@@ -94,6 +95,10 @@ fn agent_protocols_are_silent_or_structured() {
         .expect("Antigravity pass JSON")["decision"],
         "stop"
     );
+    assert_eq!(
+        render_hook_decision(HookAgent::OpenClaw, &HookDecision::Pass),
+        ""
+    );
 
     let reason = "Fix failing tests".to_owned();
     let claude = render_hook_decision(HookAgent::Claude, &HookDecision::Block(reason.clone()));
@@ -101,6 +106,10 @@ fn agent_protocols_are_silent_or_structured() {
     let codex = render_hook_decision(HookAgent::Codex, &HookDecision::Block(reason));
     let antigravity = render_hook_decision(
         HookAgent::Antigravity,
+        &HookDecision::Block("Fix failing tests".to_owned()),
+    );
+    let openclaw = render_hook_decision(
+        HookAgent::OpenClaw,
         &HookDecision::Block("Fix failing tests".to_owned()),
     );
     assert_eq!(
@@ -125,6 +134,10 @@ fn agent_protocols_are_silent_or_structured() {
             ["decision"],
         "continue"
     );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&openclaw).expect("OpenClaw JSON")["action"],
+        "revise"
+    );
 
     let codex_stop = render_hook_decision(
         HookAgent::Codex,
@@ -133,6 +146,15 @@ fn agent_protocols_are_silent_or_structured() {
     let codex_stop: serde_json::Value = serde_json::from_str(&codex_stop).expect("Codex stop JSON");
     assert_eq!(codex_stop["continue"], false);
     assert_eq!(codex_stop["stopReason"], "No progress");
+    let openclaw_stop = render_hook_decision(
+        HookAgent::OpenClaw,
+        &HookDecision::Stop("No progress".to_owned()),
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&openclaw_stop).expect("OpenClaw stop JSON")
+            ["action"],
+        "finalize"
+    );
 }
 
 #[test]
@@ -463,7 +485,7 @@ fn task_context_is_session_scoped_and_scope_drift_is_warned() {
     assert!(warning.contains("tests/api.rs"));
 
     let inside = format!(
-        r#"{{"cwd":"{}","session_id":"session-a","tool_input":{{"file_path":"src/api.rs"}}}}"#,
+        r#"{{"cwd":"{}","session_id":"session-a","tool_name":"apply_patch","tool_input":{{"file_path":"src/api.rs"}}}}"#,
         directory.path().display()
     );
     assert!(evaluate_scope_hook(directory.path(), &inside)
@@ -482,6 +504,232 @@ fn task_context_is_session_scoped_and_scope_drift_is_warned() {
             .expect("evaluate later Antigravity invocation")
             .is_none()
     );
+}
+
+#[test]
+fn general_profiles_require_acceptance_and_provenance() {
+    let directory = tempdir().expect("temp directory");
+    let goal = GoalContract {
+        metric: Some("approved requirements".to_owned()),
+        baseline: Some("0 approved".to_owned()),
+        target: Some("2 approved".to_owned()),
+        guardrails: vec!["no unsupported claims".to_owned()],
+        verifications: vec!["stakeholder review".to_owned()],
+    };
+    assert!(start_task_with_profile(
+        directory.path(),
+        "product-missing-acceptance",
+        "Design checkout requirements",
+        &[],
+        &[],
+        false,
+        goal.clone(),
+        &[],
+        TaskProfile::new("product").expect("product profile"),
+        &[],
+    )
+    .is_err());
+
+    start_task_with_profile(
+        directory.path(),
+        "product-session",
+        "Design checkout requirements",
+        &[],
+        &["mcp:productboard".to_owned()],
+        false,
+        goal,
+        &["Review customer evidence".to_owned()],
+        TaskProfile::new("product").expect("product profile"),
+        &[
+            "Primary user and problem are explicit".to_owned(),
+            "Every requirement is testable".to_owned(),
+        ],
+    )
+    .expect("start product task");
+    update_task_todos(directory.path(), "product-session", &[], &[1])
+        .expect("complete product todo");
+
+    let missing_source = mark_task_ready_with_evidence(
+        directory.path(),
+        "product-session",
+        &["requirements reviewed".to_owned()],
+        Some(90),
+        None,
+        &[],
+        &[1, 2],
+    )
+    .expect_err("role evidence must declare provenance");
+    assert!(missing_source.to_string().contains("evidence source"));
+
+    let missing_criterion = mark_task_ready_with_evidence(
+        directory.path(),
+        "product-session",
+        &["customer notes reviewed".to_owned()],
+        Some(90),
+        Some("mcp:productboard"),
+        &["artifact:product-brief".to_owned()],
+        &[1],
+    )
+    .expect_err("all acceptance criteria need evidence");
+    assert!(missing_criterion.to_string().contains("criterion #2"));
+
+    let task = mark_task_ready_with_evidence(
+        directory.path(),
+        "product-session",
+        &["customer notes and requirements reviewed".to_owned()],
+        Some(90),
+        Some("mcp:productboard"),
+        &["artifact:product-brief".to_owned()],
+        &[1, 2],
+    )
+    .expect("record structured product evidence");
+    assert_eq!(task.profile.as_str(), "product");
+    assert_eq!(task.evidence_records[0].source, "mcp:productboard");
+    assert_eq!(task.evidence_records[0].criteria, vec![1, 2]);
+}
+
+#[test]
+fn general_profiles_restore_role_review_and_warn_on_resource_drift() {
+    let directory = tempdir().expect("temp directory");
+    start_task_with_profile(
+        directory.path(),
+        "dba-session",
+        "Review the production query plan without mutations",
+        &[],
+        &[
+            "mcp:postgres/read-only".to_owned(),
+            "database:production/analytics".to_owned(),
+        ],
+        false,
+        GoalContract {
+            metric: Some("reviewed query plans".to_owned()),
+            baseline: Some("0 reviewed".to_owned()),
+            target: Some("1 reviewed".to_owned()),
+            guardrails: vec!["no production writes".to_owned()],
+            verifications: vec!["EXPLAIN plan captured".to_owned()],
+        },
+        &["Inspect the query plan".to_owned()],
+        TaskProfile::new("database").expect("database profile"),
+        &["Query plan and rollback risk are documented".to_owned()],
+    )
+    .expect("start DBA task");
+    let context_input = format!(
+        r#"{{"cwd":"{}","session_id":"dba-session"}}"#,
+        directory.path().display()
+    );
+    let context = evaluate_context_hook(directory.path(), &context_input, HookAgent::Codex)
+        .expect("evaluate context")
+        .expect("DBA context");
+    assert!(context.contains("profile: database"));
+    assert!(context.contains("acceptance criteria: 0/1 evidenced"));
+
+    let outside = format!(
+        r#"{{"cwd":"{}","session_id":"dba-session","tool_name":"mcp__postgres__execute_sql","tool_input":{{"database":"staging"}}}}"#,
+        directory.path().display()
+    );
+    let warning = evaluate_scope_hook(directory.path(), &outside)
+        .expect("evaluate resource scope")
+        .expect("resource warning");
+    assert!(warning.contains("mcp:postgres/execute_sql"));
+    assert!(warning.contains("database:staging"));
+
+    update_task_todos(directory.path(), "dba-session", &[], &[1]).expect("complete DBA todo");
+    mark_task_ready_with_evidence(
+        directory.path(),
+        "dba-session",
+        &["EXPLAIN plan captured; no statement executed".to_owned()],
+        Some(95),
+        Some("mcp:postgres/read-only"),
+        &["artifact:explain-plan.json".to_owned()],
+        &[1],
+    )
+    .expect("mark DBA task ready");
+    let (decision, _) =
+        evaluate_stop_hook(directory.path(), &context_input).expect("evaluate DBA review phase");
+    let HookDecision::Block(message) = decision else {
+        panic!("DBA profile must run a role review phase");
+    };
+    assert!(message.contains("environment, authorization"));
+}
+
+#[test]
+fn task_state_v1_defaults_new_general_guard_fields() {
+    let directory = tempdir().expect("temp directory");
+    let task_directory = directory.path().join(".forgeguard/cache/tasks");
+    fs::create_dir_all(&task_directory).expect("create task directory");
+    fs::write(
+        task_directory.join("legacy.json"),
+        r#"{
+          "version": 1,
+          "session_id": "legacy",
+          "objective": "Legacy objective",
+          "scopes": [],
+          "semantic": false,
+          "goal": {},
+          "todos": [],
+          "confidence": null,
+          "confidence_history": [],
+          "auto_pokes": 0,
+          "poke_instruction": null,
+          "status": "active",
+          "evidence": [],
+          "blocker": null
+        }"#,
+    )
+    .expect("write v1 task");
+
+    let task = task_state(directory.path(), "legacy")
+        .expect("read legacy task")
+        .expect("legacy task");
+    assert_eq!(task.profile.as_str(), "general");
+    assert!(task.resources.is_empty());
+    assert!(task.acceptance_criteria.is_empty());
+    assert!(task.evidence_records.is_empty());
+}
+
+#[test]
+fn custom_profiles_use_general_review_without_compiled_role_changes() {
+    let directory = tempdir().expect("temp directory");
+    start_task_with_profile(
+        directory.path(),
+        "custom-session",
+        "Review a legal operations checklist",
+        &[],
+        &[],
+        false,
+        GoalContract {
+            metric: Some("reviewed checklist items".to_owned()),
+            baseline: Some("0 reviewed".to_owned()),
+            target: Some("1 reviewed".to_owned()),
+            guardrails: vec!["no unsupported legal claims".to_owned()],
+            verifications: vec!["qualified reviewer sign-off".to_owned()],
+        },
+        &["Review the checklist".to_owned()],
+        TaskProfile::new("legal-operations").expect("custom profile"),
+        &["Every checklist item has a source".to_owned()],
+    )
+    .expect("start custom task");
+    update_task_todos(directory.path(), "custom-session", &[], &[1]).expect("complete custom todo");
+    mark_task_ready_with_evidence(
+        directory.path(),
+        "custom-session",
+        &["reviewer checked every item".to_owned()],
+        Some(90),
+        Some("human:qualified-reviewer"),
+        &[],
+        &[1],
+    )
+    .expect("mark custom task ready");
+    let input = format!(
+        r#"{{"cwd":"{}","session_id":"custom-session"}}"#,
+        directory.path().display()
+    );
+    let (decision, _) =
+        evaluate_stop_hook(directory.path(), &input).expect("evaluate custom profile review");
+    let HookDecision::Block(message) = decision else {
+        panic!("custom profile must receive a general review phase");
+    };
+    assert!(message.contains("reinspect the objective"));
 }
 
 #[test]

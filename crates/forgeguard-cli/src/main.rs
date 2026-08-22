@@ -11,12 +11,11 @@ use forgeguard_core::{
     config::{ForgeGuardConfig, UpdatePolicy, CONFIG_FILE},
     create_baseline_with_config, detect_installed_agents, detect_project, evaluate_context_hook,
     evaluate_scope_hook, evaluate_stop_hook, initialize_global, initialize_project,
-    mark_task_ready_with_confidence, render_context_hook, render_hook_decision,
-    render_scope_warning,
+    mark_task_ready_with_evidence, render_context_hook, render_hook_decision, render_scope_warning,
     report::{render_detection, render_doctor, render_gate, render_gate_compact, render_sarif},
-    run_changed_gate, run_doctor, run_gate, start_task_with_contract, task_state,
-    update_task_todos, AgentTarget, GateOptions, GateReport, GateStatus, GoalContract, GuardMode,
-    HookAgent, HookDecision, InitOptions, BASELINE_FILE, LANGUAGE_CAPABILITIES, RULES,
+    run_changed_gate, run_doctor, run_gate, start_task_with_profile, task_state, update_task_todos,
+    AgentTarget, GateOptions, GateReport, GateStatus, GoalContract, GuardMode, HookAgent,
+    HookDecision, InitOptions, TaskProfile, BASELINE_FILE, LANGUAGE_CAPABILITIES, RULES,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -151,6 +150,9 @@ enum AgentArg {
     Cursor,
     #[value(name = "opencode")]
     OpenCode,
+    Hermes,
+    #[value(name = "openclaw")]
+    OpenClaw,
     Antigravity,
     Windsurf,
     Copilot,
@@ -227,9 +229,17 @@ enum TaskCommands {
         session: String,
         #[arg(long)]
         objective: String,
+        /// Workflow profile. Built-ins include product, qa, security, business-analysis,
+        /// database, architecture, content-creator, and statistics; custom names are allowed.
+        #[arg(long, default_value = "general")]
+        profile: String,
         /// Repository-relative path prefix. Repeat for multiple scopes.
         #[arg(long = "scope")]
         scopes: Vec<String>,
+        /// Non-file resource prefix such as mcp:playwright, url:https://example.com,
+        /// or database:production/analytics. Repeat for multiple resources.
+        #[arg(long = "resource")]
+        resources: Vec<String>,
         /// Ask the host's native goal evaluator to track semantic completion.
         #[arg(long)]
         semantic: bool,
@@ -251,6 +261,9 @@ enum TaskCommands {
         /// Verifiable work item. Repeat for multiple todos.
         #[arg(long = "todo")]
         todos: Vec<String>,
+        /// Verifiable completion criterion. Required for non-general profiles.
+        #[arg(long = "acceptance")]
+        acceptance_criteria: Vec<String>,
         #[arg(long)]
         json: bool,
     },
@@ -261,6 +274,15 @@ enum TaskCommands {
         /// Exact executed check or tool result. Repeat for multiple evidence items.
         #[arg(long = "evidence")]
         evidence: Vec<String>,
+        /// Evidence provenance such as mcp:playwright, command:cargo-test, or human:reviewer.
+        #[arg(long)]
+        source: Option<String>,
+        /// Artifact reference such as artifact:trace.zip. Repeat for multiple artifacts.
+        #[arg(long = "artifact")]
+        artifacts: Vec<String>,
+        /// 1-based acceptance criterion proved by this evidence. Repeat as needed.
+        #[arg(long = "criterion")]
+        criteria: Vec<usize>,
         /// Model-reported confidence; tracked but never replaces evidence or gates.
         #[arg(long)]
         confidence: Option<u8>,
@@ -304,6 +326,8 @@ enum HookAgentArg {
     Claude,
     Cursor,
     Antigravity,
+    #[value(name = "openclaw")]
+    OpenClaw,
 }
 
 fn main() -> ExitCode {
@@ -805,7 +829,9 @@ fn execute_task(root: &Path, command: TaskCommands) -> Result<ExitCode> {
         TaskCommands::Start {
             session,
             objective,
+            profile,
             scopes,
+            resources,
             semantic,
             metric,
             baseline,
@@ -813,13 +839,15 @@ fn execute_task(root: &Path, command: TaskCommands) -> Result<ExitCode> {
             guardrails,
             verifications,
             todos,
+            acceptance_criteria,
             json,
         } => (
-            start_task_with_contract(
+            start_task_with_profile(
                 root,
                 &session,
                 &objective,
                 &scopes,
+                &resources,
                 semantic,
                 GoalContract {
                     metric,
@@ -829,16 +857,29 @@ fn execute_task(root: &Path, command: TaskCommands) -> Result<ExitCode> {
                     verifications,
                 },
                 &todos,
+                TaskProfile::new(&profile)?,
+                &acceptance_criteria,
             )?,
             json,
         ),
         TaskCommands::Ready {
             session,
             evidence,
+            source,
+            artifacts,
+            criteria,
             confidence,
             json,
         } => (
-            mark_task_ready_with_confidence(root, &session, &evidence, confidence)?,
+            mark_task_ready_with_evidence(
+                root,
+                &session,
+                &evidence,
+                confidence,
+                source.as_deref(),
+                &artifacts,
+                &criteria,
+            )?,
             json,
         ),
         TaskCommands::Todo {
@@ -956,6 +997,8 @@ impl From<AgentArg> for AgentTarget {
             AgentArg::Claude => Self::Claude,
             AgentArg::Cursor => Self::Cursor,
             AgentArg::OpenCode => Self::OpenCode,
+            AgentArg::Hermes => Self::Hermes,
+            AgentArg::OpenClaw => Self::OpenClaw,
             AgentArg::Antigravity => Self::Antigravity,
             AgentArg::Windsurf => Self::Windsurf,
             AgentArg::Copilot => Self::Copilot,
@@ -983,6 +1026,7 @@ impl From<HookAgentArg> for HookAgent {
             HookAgentArg::Claude => Self::Claude,
             HookAgentArg::Cursor => Self::Cursor,
             HookAgentArg::Antigravity => Self::Antigravity,
+            HookAgentArg::OpenClaw => Self::OpenClaw,
         }
     }
 }
@@ -994,6 +1038,8 @@ const AGENT_MENU: &[(&str, AgentTarget)] = &[
     ("claude", AgentTarget::Claude),
     ("cursor", AgentTarget::Cursor),
     ("opencode", AgentTarget::OpenCode),
+    ("hermes", AgentTarget::Hermes),
+    ("openclaw", AgentTarget::OpenClaw),
     ("antigravity", AgentTarget::Antigravity),
     ("windsurf", AgentTarget::Windsurf),
     ("copilot", AgentTarget::Copilot),
@@ -1008,6 +1054,8 @@ const AGENT_SUMMARY: &[(&str, &str)] = &[
     ("claude", "CLAUDE.md, own skill, Stop hook"),
     ("cursor", ".cursor/rules, shared skill, stop hook"),
     ("opencode", "AGENTS.md, shared skill"),
+    ("hermes", "AGENTS.md, native skill"),
+    ("openclaw", "AGENTS.md, native skill"),
     ("antigravity", ".agents/rules, shared skill, Stop hook"),
     ("windsurf", "AGENTS.md only"),
     ("copilot", "AGENTS.md only"),
@@ -1573,8 +1621,13 @@ mod tests {
     #[test]
     fn maps_checked_names_in_menu_order() {
         assert_eq!(
-            agents_from_names(&["cursor", "codex"]),
-            vec![AgentTarget::Codex, AgentTarget::Cursor]
+            agents_from_names(&["openclaw", "cursor", "codex", "hermes"]),
+            vec![
+                AgentTarget::Codex,
+                AgentTarget::Cursor,
+                AgentTarget::Hermes,
+                AgentTarget::OpenClaw,
+            ]
         );
     }
 
@@ -1610,7 +1663,7 @@ mod tests {
     #[test]
     fn menu_rows_round_trip_back_to_targets() {
         let rows = agent_menu_rows();
-        let picked = vec![rows[1].clone(), rows[6].clone()];
+        let picked = vec![rows[1].clone(), rows[8].clone()];
 
         assert_eq!(
             agents_from_rows(&picked),
@@ -1692,5 +1745,43 @@ mod tests {
                 ..
             } if base == "origin/main"
         ));
+    }
+
+    #[test]
+    fn parses_cross_role_task_contract_and_evidence() {
+        let start = Cli::try_parse_from([
+            "forgeguard",
+            "task",
+            "start",
+            "--session",
+            "qa-session",
+            "--objective",
+            "Verify checkout",
+            "--profile",
+            "qa",
+            "--resource",
+            "mcp:playwright",
+            "--acceptance",
+            "guest checkout succeeds",
+        ])
+        .expect("parse role task");
+        assert!(matches!(start.command, Commands::Task { .. }));
+
+        Cli::try_parse_from([
+            "forgeguard",
+            "task",
+            "ready",
+            "--session",
+            "qa-session",
+            "--evidence",
+            "trace captured",
+            "--source",
+            "mcp:playwright",
+            "--artifact",
+            "artifact:trace.zip",
+            "--criterion",
+            "1",
+        ])
+        .expect("parse structured evidence");
     }
 }

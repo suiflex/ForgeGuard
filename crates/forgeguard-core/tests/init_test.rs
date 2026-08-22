@@ -260,6 +260,35 @@ fn installs_global_general_guard_configuration_and_skills() {
         .path()
         .join(".config/opencode/skills/forgeguard-engineering/SKILL.md")
         .exists());
+    assert!(directory
+        .path()
+        .join(".config/opencode/skills/forgeguard-engineering/references/general-work.md")
+        .exists());
+    assert!(directory
+        .path()
+        .join(".hermes/skills/forgeguard-engineering/SKILL.md")
+        .exists());
+    assert!(directory
+        .path()
+        .join(".openclaw/skills/forgeguard-engineering/SKILL.md")
+        .exists());
+    assert!(directory
+        .path()
+        .join(".openclaw/extensions/forgeguard/openclaw.plugin.json")
+        .exists());
+    let openclaw_config: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(directory.path().join(".openclaw/openclaw.json"))
+            .expect("read OpenClaw config"),
+    )
+    .expect("parse OpenClaw config");
+    assert_eq!(
+        openclaw_config["plugins"]["entries"]["forgeguard"]["enabled"],
+        true
+    );
+    assert_eq!(
+        openclaw_config["plugins"]["entries"]["forgeguard"]["hooks"]["allowConversationAccess"],
+        true
+    );
     assert!(directory.path().join(".gemini/GEMINI.md").exists());
     assert!(directory
         .path()
@@ -629,6 +658,8 @@ fn detects_only_agents_with_configuration_present() {
 
     fs::create_dir_all(directory.path().join(".claude")).expect("create .claude");
     fs::create_dir_all(directory.path().join(".roo/rules")).expect("create .roo/rules");
+    fs::create_dir_all(directory.path().join(".hermes")).expect("create .hermes");
+    fs::create_dir_all(directory.path().join(".openclaw")).expect("create .openclaw");
     fs::create_dir_all(directory.path().join(".github")).expect("create .github");
     fs::write(
         directory.path().join(".github/copilot-instructions.md"),
@@ -640,8 +671,68 @@ fn detects_only_agents_with_configuration_present() {
 
     assert_eq!(
         detected,
-        vec![AgentTarget::Claude, AgentTarget::Copilot, AgentTarget::Roo]
+        vec![
+            AgentTarget::Claude,
+            AgentTarget::Hermes,
+            AgentTarget::OpenClaw,
+            AgentTarget::Copilot,
+            AgentTarget::Roo,
+        ]
     );
+}
+
+#[test]
+fn global_hermes_and_openclaw_use_their_native_skill_directories() {
+    let directory = tempdir().expect("temp directory");
+    fs::create_dir_all(directory.path().join(".openclaw")).expect("create OpenClaw home");
+    fs::write(
+        directory.path().join(".openclaw/openclaw.json"),
+        r#"{"plugins":{"allow":["existing"],"entries":{"forgeguard":{"hooks":{"timeoutMs":1234}}}},"custom":true}"#,
+    )
+    .expect("seed OpenClaw config");
+
+    let report = forgeguard_core::initialize_global(
+        directory.path(),
+        &InitOptions {
+            force: false,
+            refresh: false,
+            agents: vec![AgentTarget::Hermes, AgentTarget::OpenClaw],
+        },
+    )
+    .expect("install global skills");
+
+    assert_eq!(
+        report.agents,
+        vec![AgentTarget::Hermes, AgentTarget::OpenClaw]
+    );
+    assert!(directory
+        .path()
+        .join(".hermes/skills/forgeguard-engineering/SKILL.md")
+        .is_file());
+    assert!(directory
+        .path()
+        .join(".openclaw/skills/forgeguard-engineering/SKILL.md")
+        .is_file());
+    assert!(directory
+        .path()
+        .join(".openclaw/extensions/forgeguard/index.js")
+        .is_file());
+    let config: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(directory.path().join(".openclaw/openclaw.json"))
+            .expect("read merged OpenClaw config"),
+    )
+    .expect("parse merged OpenClaw config");
+    assert_eq!(config["custom"], true);
+    assert_eq!(
+        config["plugins"]["allow"],
+        serde_json::json!(["existing", "forgeguard"])
+    );
+    assert_eq!(
+        config["plugins"]["entries"]["forgeguard"]["hooks"]["timeoutMs"],
+        1234
+    );
+    assert_eq!(config["plugins"]["entries"]["forgeguard"]["enabled"], true);
+    assert!(!directory.path().join("AGENTS.md").exists());
 }
 
 #[test]

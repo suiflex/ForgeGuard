@@ -37,6 +37,7 @@ const DOCUMENTATION_EXTENSIONS: [&str; 17] = [
     "gif", "webp", "svg", "ico", "pdf",
 ];
 const TASK_DIR: &str = ".forgeguard/cache/tasks";
+const TASK_STATE_VERSION: u32 = 2;
 const REPORT_FILE: &str = ".forgeguard/reports/latest.json";
 const MAX_OBJECTIVE_CHARS: usize = 4_000;
 const MAX_EVIDENCE_ITEMS: usize = 8;
@@ -60,6 +61,62 @@ const GENERAL_AUTO_POKE_PHASES: [&str; 5] = [
     "verify claims, numbers, edge cases, and failure handling against evidence",
     "run final verification and confirm no objective gap remains",
 ];
+const PRODUCT_AUTO_POKE_PHASES: [&str; 5] = [
+    "reinspect the user problem, desired outcome, assumptions, and remaining TODOs",
+    "verify product claims and acceptance criteria against customer, market, or stakeholder evidence",
+    "review requirements for testability, non-goals, dependencies, and scope drift",
+    "challenge metrics, trade-offs, edge cases, and unsupported assumptions",
+    "run final product review and confirm every acceptance criterion has evidence",
+];
+const QA_AUTO_POKE_PHASES: [&str; 5] = [
+    "reinspect product risk, test scope, environments, and remaining TODOs",
+    "execute the relevant checks and capture expected versus actual evidence",
+    "review negative, boundary, permission, accessibility, and regression coverage",
+    "verify reproducibility, test data, environment state, and cleanup",
+    "run final QA review and confirm every acceptance criterion has evidence",
+];
+const SECURITY_AUTO_POKE_PHASES: [&str; 5] = [
+    "reconfirm authorization, assets, trust boundaries, threats, and remaining TODOs",
+    "collect reproducible security evidence without expanding the authorized scope",
+    "review exploitability, likelihood, impact, affected assets, and false-positive risk",
+    "verify mitigation, negative tests, residual risk, and rollback or containment",
+    "run final security review and confirm every finding and acceptance criterion has evidence",
+];
+const BUSINESS_ANALYSIS_AUTO_POKE_PHASES: [&str; 5] = [
+    "reinspect stakeholders, sources, business objective, terminology, and remaining TODOs",
+    "trace each business rule and requirement to source evidence",
+    "review contradictions, exceptions, assumptions, dependencies, and scope drift",
+    "verify current-state and future-state impacts against stakeholder evidence",
+    "run final analysis review and confirm every acceptance criterion has evidence",
+];
+const DATABASE_AUTO_POKE_PHASES: [&str; 5] = [
+    "reconfirm environment, authorization, read/write intent, affected data, and remaining TODOs",
+    "verify schema, query plan, representative data, and measured database evidence",
+    "review locking, transactions, indexes, concurrency, permissions, and blast radius",
+    "verify backup, rollback, compatibility, and residual operational risk",
+    "run final database review and confirm every acceptance criterion has evidence",
+];
+const ARCHITECTURE_AUTO_POKE_PHASES: [&str; 5] = [
+    "reinspect constraints, quality attributes, stakeholders, and remaining TODOs",
+    "verify alternatives and trade-offs against system and operational evidence",
+    "review boundaries, failure modes, security, data, compatibility, and scope drift",
+    "verify migration, rollback, observability, and architecture fitness measures",
+    "run final architecture review and confirm every decision and acceptance criterion has evidence",
+];
+const CONTENT_AUTO_POKE_PHASES: [&str; 5] = [
+    "reinspect audience, channel, intent, sources, and remaining TODOs",
+    "verify factual claims, quotations, and numbers against source evidence",
+    "review structure, originality, tone, accessibility, rights, and scope drift",
+    "verify brand constraints, edge cases, calls to action, and unsupported claims",
+    "run final editorial review and confirm every acceptance criterion has evidence",
+];
+const STATISTICS_AUTO_POKE_PHASES: [&str; 5] = [
+    "reinspect the question, population, variables, data lineage, and remaining TODOs",
+    "verify data quality, transformations, calculations, and reproducible evidence",
+    "review method assumptions, uncertainty, bias, leakage, and alternative explanations",
+    "verify sensitivity, limitations, visual encodings, and claim-to-result alignment",
+    "run final statistical review and confirm every acceptance criterion has evidence",
+];
 const CLARIFICATION_CONTEXT: &str = "Before acting, resolve missing facts with read-only inspection. If unresolved ambiguity materially changes behavior, data, security, scope, cost, or external or irreversible state, {question_instruction} and wait for the answer. Otherwise use the safest reversible default and state it briefly.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +125,7 @@ pub enum HookAgent {
     Claude,
     Cursor,
     Antigravity,
+    OpenClaw,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,6 +159,60 @@ pub enum TaskStatus {
     Ready,
     Completed,
     Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct TaskProfile(String);
+
+impl TaskProfile {
+    pub fn new(profile: &str) -> Result<Self> {
+        let profile = profile.trim().to_ascii_lowercase().replace('_', "-");
+        if profile.is_empty()
+            || profile.len() > 64
+            || !profile
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '-')
+        {
+            bail!("task profile must contain 1-64 letters, digits, or '-'");
+        }
+        Ok(Self(profile))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn is_general(&self) -> bool {
+        self.0 == "general"
+    }
+}
+
+impl Default for TaskProfile {
+    fn default() -> Self {
+        Self("general".to_owned())
+    }
+}
+
+impl<'de> Deserialize<'de> for TaskProfile {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // forgeguard: allow FG-SEC-005 -- serde decodes one string, then TaskProfile::new validates its bounds and character set
+        let profile = String::deserialize(deserializer)?;
+        Self::new(&profile).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskEvidence {
+    pub summary: String,
+    pub source: String,
+    #[serde(default)]
+    pub artifacts: Vec<String>,
+    #[serde(default)]
+    pub criteria: Vec<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -137,12 +249,18 @@ pub struct TaskState {
     pub version: u32,
     pub session_id: String,
     pub objective: String,
+    #[serde(default)]
+    pub profile: TaskProfile,
     pub scopes: Vec<String>,
+    #[serde(default)]
+    pub resources: Vec<String>,
     pub semantic: bool,
     #[serde(default)]
     pub goal: GoalContract,
     #[serde(default)]
     pub todos: Vec<TaskTodo>,
+    #[serde(default)]
+    pub acceptance_criteria: Vec<String>,
     #[serde(default)]
     pub confidence: Option<u8>,
     #[serde(default)]
@@ -153,6 +271,8 @@ pub struct TaskState {
     pub poke_instruction: Option<String>,
     pub status: TaskStatus,
     pub evidence: Vec<String>,
+    #[serde(default)]
+    pub evidence_records: Vec<TaskEvidence>,
     pub blocker: Option<String>,
 }
 
@@ -207,7 +327,8 @@ fn evaluate_general_stop_hook(
             .unwrap_or_else(|| HookDecision::Block(incomplete_task_message(session))),
         TaskStatus::Active => HookDecision::Pass,
         TaskStatus::Ready if focus.enabled => {
-            match ready_auto_poke(root, &mut task, focus, &GENERAL_AUTO_POKE_PHASES, "work")? {
+            let phases = general_auto_poke_phases(&task.profile);
+            match ready_auto_poke(root, &mut task, focus, phases, "work")? {
                 Some(decision) => decision,
                 None => {
                     task.status = TaskStatus::Completed;
@@ -497,6 +618,7 @@ pub fn render_hook_decision(agent: HookAgent, decision: &HookDecision) -> String
     match (agent, decision) {
         (HookAgent::Cursor, HookDecision::Pass) => "{}".to_owned(),
         (HookAgent::Antigravity, HookDecision::Pass) => json!({"decision": "stop"}).to_string(),
+        (HookAgent::OpenClaw, HookDecision::Pass) => String::new(),
         (_, HookDecision::Pass) => String::new(),
         (HookAgent::Claude, HookDecision::Block(reason)) => {
             json!({"decision": "block", "reason": reason}).to_string()
@@ -512,9 +634,17 @@ pub fn render_hook_decision(agent: HookAgent, decision: &HookDecision) -> String
             "reason": reason
         })
         .to_string(),
+        (HookAgent::OpenClaw, HookDecision::Block(reason)) => json!({
+            "action": "revise",
+            "reason": reason
+        })
+        .to_string(),
         (HookAgent::Cursor, HookDecision::Stop(_)) => "{}".to_owned(),
         (HookAgent::Antigravity, HookDecision::Stop(reason)) => {
             json!({"decision": "stop", "reason": reason}).to_string()
+        }
+        (HookAgent::OpenClaw, HookDecision::Stop(reason)) => {
+            json!({"action": "finalize", "reason": reason}).to_string()
         }
         (_, HookDecision::Stop(reason)) => json!({
             "continue": false,
@@ -552,6 +682,33 @@ pub fn start_task_with_contract(
     goal: GoalContract,
     todos: &[String],
 ) -> Result<TaskState> {
+    start_task_with_profile(
+        root,
+        session_id,
+        objective,
+        scopes,
+        &[],
+        semantic,
+        goal,
+        todos,
+        TaskProfile::default(),
+        &[],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn start_task_with_profile(
+    root: &Path,
+    session_id: &str,
+    objective: &str,
+    scopes: &[String],
+    resources: &[String],
+    semantic: bool,
+    goal: GoalContract,
+    todos: &[String],
+    profile: TaskProfile,
+    acceptance_criteria: &[String],
+) -> Result<TaskState> {
     validate_session_id(session_id)?;
     let objective = objective.trim();
     if objective.is_empty() {
@@ -566,11 +723,28 @@ pub fn start_task_with_contract(
         .collect::<Result<Vec<_>>>()?;
     scopes.sort();
     scopes.dedup();
+    if resources.len() > MAX_TASK_ITEMS {
+        bail!("task resource exceeds {MAX_TASK_ITEMS} items");
+    }
+    let mut resources = resources
+        .iter()
+        .map(|resource| normalize_resource("task resource", resource))
+        .collect::<Result<Vec<_>>>()?;
+    resources.sort();
+    resources.dedup();
     let goal = normalize_goal_contract(goal)?;
     let todos = normalize_task_items("todo", todos, MAX_TASK_ITEMS)?
         .into_iter()
         .map(|text| TaskTodo { text, done: false })
         .collect();
+    let acceptance_criteria =
+        normalize_task_items("acceptance criterion", acceptance_criteria, MAX_TASK_ITEMS)?;
+    if !profile.is_general() && acceptance_criteria.is_empty() {
+        bail!(
+            "{} tasks require at least one acceptance criterion",
+            profile.as_str()
+        );
+    }
     // Carrying the auto-poke budget over stops an agent from escaping it by
     // reframing the same work. A blocked task is different: the session already
     // reported its blocker and stopped, so the next objective starts fresh
@@ -585,19 +759,23 @@ pub fn start_task_with_contract(
             (task.auto_pokes, task.confidence_history)
         });
     let task = TaskState {
-        version: 1,
+        version: TASK_STATE_VERSION,
         session_id: session_id.to_owned(),
         objective: objective.to_owned(),
+        profile,
         scopes,
+        resources,
         semantic,
         goal,
         todos,
+        acceptance_criteria,
         confidence: None,
         confidence_history,
         auto_pokes,
         poke_instruction: None,
         status: TaskStatus::Active,
         evidence: Vec::new(),
+        evidence_records: Vec::new(),
         blocker: None,
     };
     write_task(root, &task)?;
@@ -613,6 +791,19 @@ pub fn mark_task_ready_with_confidence(
     session_id: &str,
     evidence: &[String],
     confidence: Option<u8>,
+) -> Result<TaskState> {
+    mark_task_ready_with_evidence(root, session_id, evidence, confidence, None, &[], &[])
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn mark_task_ready_with_evidence(
+    root: &Path,
+    session_id: &str,
+    evidence: &[String],
+    confidence: Option<u8>,
+    source: Option<&str>,
+    artifacts: &[String],
+    criteria: &[usize],
 ) -> Result<TaskState> {
     validate_session_id(session_id)?;
     if evidence.is_empty() {
@@ -640,6 +831,39 @@ pub fn mark_task_ready_with_confidence(
     if pending > 0 {
         bail!("{pending} task todo(s) remain incomplete");
     }
+    let source = source
+        .map(|source| normalize_resource("evidence source", source))
+        .transpose()?;
+    if !task.profile.is_general() && source.is_none() {
+        bail!(
+            "{} tasks require an evidence source such as `mcp:playwright`, `command:cargo-test`, or `human:stakeholder-review`",
+            task.profile.as_str()
+        );
+    }
+    if artifacts.len() > MAX_EVIDENCE_ITEMS {
+        bail!("evidence artifact exceeds {MAX_EVIDENCE_ITEMS} items");
+    }
+    let artifacts = artifacts
+        .iter()
+        .map(|artifact| normalize_resource("evidence artifact", artifact))
+        .collect::<Result<Vec<_>>>()?;
+    let mut criteria = criteria.to_vec();
+    criteria.sort_unstable();
+    criteria.dedup();
+    if let Some(index) = criteria
+        .iter()
+        .find(|index| **index == 0 || **index > task.acceptance_criteria.len())
+    {
+        bail!(
+            "acceptance criterion index {index} is outside 1..={}",
+            task.acceptance_criteria.len()
+        );
+    }
+    if let Some(index) =
+        (1..=task.acceptance_criteria.len()).find(|index| !criteria.contains(index))
+    {
+        bail!("acceptance criterion #{index} has no submitted evidence");
+    }
     if let Some(confidence) = confidence {
         if confidence > 100 {
             bail!("task confidence must be between 0 and 100");
@@ -651,7 +875,18 @@ pub fn mark_task_ready_with_confidence(
         }
     }
     task.status = TaskStatus::Ready;
-    task.evidence = evidence;
+    task.version = TASK_STATE_VERSION;
+    task.evidence = evidence.clone();
+    let source = source.unwrap_or_else(|| "manual:legacy".to_owned());
+    task.evidence_records = evidence
+        .iter()
+        .map(|summary| TaskEvidence {
+            summary: summary.clone(),
+            source: source.clone(),
+            artifacts: artifacts.clone(),
+            criteria: criteria.clone(),
+        })
+        .collect();
     task.poke_instruction = None;
     task.blocker = None;
     write_task(root, &task)?;
@@ -688,7 +923,10 @@ pub fn update_task_todos(
         bail!("provide at least one todo addition or completed index");
     }
     task.status = TaskStatus::Active;
+    task.version = TASK_STATE_VERSION;
     task.confidence = None;
+    task.evidence.clear();
+    task.evidence_records.clear();
     task.poke_instruction = None;
     task.blocker = None;
     write_task(root, &task)?;
@@ -727,7 +965,7 @@ pub fn evaluate_context_hook(
             "ForgeGuard focus session {session}. For non-trivial code changes, register the objective and verifiable todos before editing: `forgeguard task start --session {session} --objective <goal> --todo <step> [--metric <metric> --baseline <value> --target <value> --verification <check>]`. Never state a correction, number, or completion claim without exact tool/check evidence; label it unverified otherwise."
         ),
         None => format!(
-            "ForgeGuard general focus session {session}. For non-trivial work, register the objective and verifiable todos: `forgeguard task start --session {session} --objective <goal> --todo <step> [--metric <metric> --baseline <value> --target <value> --verification <check>]`. Never state a correction, number, or completion claim without exact tool/check evidence; label it unverified otherwise."
+            "ForgeGuard general focus session {session}. For non-trivial work, register the objective and verifiable todos: `forgeguard task start --session {session} --objective <goal> --todo <step> [--profile <role> --acceptance <criterion> --resource <kind:value> --metric <metric> --baseline <value> --target <value> --verification <check>]`. Never state a correction, number, or completion claim without exact tool/check evidence; label it unverified otherwise."
         ),
     };
     if code_guard {
@@ -742,7 +980,7 @@ pub fn evaluate_context_hook(
     let question_instruction = match agent {
         HookAgent::Claude => "call `AskUserQuestion`",
         HookAgent::Codex => "use `request_user_input` when available, otherwise ask directly",
-        HookAgent::Cursor | HookAgent::Antigravity => {
+        HookAgent::Cursor | HookAgent::Antigravity | HookAgent::OpenClaw => {
             "use the host's native structured user-input tool when available, otherwise ask directly"
         }
     };
@@ -770,6 +1008,7 @@ pub fn render_context_hook(agent: HookAgent, input: &str, context: &str) -> Stri
         HookAgent::Antigravity => {
             json!({"injectSteps": [{"ephemeralMessage": context}]}).to_string()
         }
+        HookAgent::OpenClaw => json!({"prependContext": context}).to_string(),
     }
 }
 
@@ -782,7 +1021,7 @@ pub fn evaluate_scope_hook(fallback_root: &Path, input: &str) -> Result<Option<S
     let Some(task) = read_task(&root, &session)? else {
         return Ok(None);
     };
-    if task.status != TaskStatus::Active || task.scopes.is_empty() {
+    if task.status != TaskStatus::Active || (task.scopes.is_empty() && task.resources.is_empty()) {
         return Ok(None);
     }
     let tool_input = payload
@@ -794,20 +1033,49 @@ pub fn evaluate_scope_hook(fallback_root: &Path, input: &str) -> Result<Option<S
     paths.extend(patch_paths(tool_input));
     paths.sort();
     paths.dedup();
-    let outside = paths
-        .into_iter()
-        .filter_map(|path| normalize_tool_path(&root, &path))
-        .filter(|path| !task.scopes.iter().any(|scope| path_in_scope(path, scope)))
-        .take(3)
-        .collect::<Vec<_>>();
-    if outside.is_empty() {
+    let outside_paths = if task.scopes.is_empty() {
+        Vec::new()
+    } else {
+        paths
+            .into_iter()
+            .filter_map(|path| normalize_tool_path(&root, &path))
+            .filter(|path| !task.scopes.iter().any(|scope| path_in_scope(path, scope)))
+            .take(3)
+            .map(|path| truncate(&path, 120))
+            .collect::<Vec<_>>()
+    };
+    let outside_resources = if task.resources.is_empty() {
+        Vec::new()
+    } else {
+        collect_tool_resources(&payload)
+            .into_iter()
+            .filter(|resource| {
+                !task
+                    .resources
+                    .iter()
+                    .any(|scope| resource_in_scope(resource, scope))
+            })
+            .take(3)
+            .map(|resource| truncate(&resource, 120))
+            .collect::<Vec<_>>()
+    };
+    if outside_paths.is_empty() && outside_resources.is_empty() {
         return Ok(None);
     }
+    let mut outside = outside_paths;
+    outside.extend(outside_resources);
+    let declared = task
+        .scopes
+        .iter()
+        .chain(task.resources.iter())
+        .take(6)
+        .map(|scope| truncate(scope, 120))
+        .collect::<Vec<_>>();
     Ok(Some(format!(
         "ForgeGuard scope warning for objective `{}`: {} outside declared scope [{}]. Reinspect and expand scope explicitly only when required by the objective.",
         truncate(&task.objective, 120),
         outside.join(", "),
-        task.scopes.join(", ")
+        declared.join(", ")
     )))
 }
 
@@ -822,6 +1090,7 @@ pub fn render_scope_warning(agent: HookAgent, warning: &str) -> String {
         .to_string(),
         HookAgent::Cursor => json!({"permission": "allow", "user_message": warning}).to_string(),
         HookAgent::Antigravity => json!({"decision": "allow", "reason": warning}).to_string(),
+        HookAgent::OpenClaw => json!({"block": false}).to_string(),
     }
 }
 
@@ -1212,6 +1481,20 @@ fn ready_auto_poke(
     continue_auto_poke(root, task, focus, phase, false, evidence_context)
 }
 
+fn general_auto_poke_phases(profile: &TaskProfile) -> &'static [&'static str; 5] {
+    match profile.as_str() {
+        "product" | "product-owner" | "product-manager" => &PRODUCT_AUTO_POKE_PHASES,
+        "qa" | "quality-assurance" | "tester" => &QA_AUTO_POKE_PHASES,
+        "security" | "security-engineer" => &SECURITY_AUTO_POKE_PHASES,
+        "business-analysis" | "business-analyst" => &BUSINESS_ANALYSIS_AUTO_POKE_PHASES,
+        "database" | "database-administrator" | "dba" => &DATABASE_AUTO_POKE_PHASES,
+        "architecture" | "software-architect" => &ARCHITECTURE_AUTO_POKE_PHASES,
+        "content" | "content-creator" | "writer" | "editor" => &CONTENT_AUTO_POKE_PHASES,
+        "statistics" | "statistician" | "data-analyst" => &STATISTICS_AUTO_POKE_PHASES,
+        _ => &GENERAL_AUTO_POKE_PHASES,
+    }
+}
+
 fn continue_auto_poke(
     root: &Path,
     task: &mut TaskState,
@@ -1236,6 +1519,7 @@ fn continue_auto_poke(
     task.auto_pokes += 1;
     task.status = TaskStatus::Active;
     task.evidence.clear();
+    task.evidence_records.clear();
     task.confidence = None;
     let instruction = truncate(instruction, 700);
     task.poke_instruction = Some(instruction.clone());
@@ -1249,7 +1533,7 @@ fn continue_auto_poke(
 
 fn missing_task_message(session: &str) -> String {
     format!(
-        "ForgeGuard focus contract missing. Register the exact objective and verifiable todo with `forgeguard task start --session {session} --objective <goal> --todo <step> [--scope <path-prefix>]`, then finish with executed evidence."
+        "ForgeGuard focus contract missing. Register the exact objective and verifiable todo with `forgeguard task start --session {session} --objective <goal> --todo <step> [--profile <role> --acceptance <criterion> --scope <path-prefix> --resource <kind:value>]`, then finish with executed evidence."
     )
 }
 
@@ -1267,7 +1551,7 @@ fn task_context(task: &TaskState, code_guard: bool) -> String {
             "work scope not constrained".to_owned()
         }
     } else {
-        format!("scope prefixes: {}", task.scopes.join(", "))
+        format!("scope prefixes: {}", truncate(&task.scopes.join(", "), 500))
     };
     let semantic = if task.semantic {
         " Use the host's native goal evaluator when available, but treat executed checks as source of truth."
@@ -1289,17 +1573,63 @@ fn task_context(task: &TaskState, code_guard: bool) -> String {
         String::new()
     };
     let completed_todos = task.todos.iter().filter(|todo| todo.done).count();
+    let evidenced_criteria = task
+        .evidence_records
+        .iter()
+        .flat_map(|evidence| evidence.criteria.iter().copied())
+        .collect::<std::collections::HashSet<_>>()
+        .len();
     let confidence = task
         .confidence
         .map_or_else(|| "unreported".to_owned(), |value| format!("{value}/100"));
     format!(
-        "ForgeGuard objective [{}]: {}. Status: {:?}; {scopes}; hill-climbability contract: {}/100; todos: {completed_todos}/{}; model confidence: {confidence}.{auto_poke} Never state a correction, number, or completion claim without exact tool/check evidence; label it unverified otherwise.{semantic}",
+        "ForgeGuard objective [{}]: {}. Status: {:?}; profile: {}; {scopes}; resources: {}; hill-climbability contract: {}/100; todos: {completed_todos}/{}; acceptance criteria: {evidenced_criteria}/{} evidenced; model confidence: {confidence}. Profile focus: {}.{auto_poke} Never state a correction, number, or completion claim without exact tool/check evidence; label it unverified otherwise.{semantic}",
         task.session_id,
         truncate(&task.objective, 300),
         task.status,
+        task.profile.as_str(),
+        if task.resources.is_empty() {
+            "not constrained".to_owned()
+        } else {
+            truncate(&task.resources.join(", "), 500)
+        },
         task.goal.hill_climbability(),
-        task.todos.len()
+        task.todos.len(),
+        task.acceptance_criteria.len(),
+        profile_guidance(&task.profile)
     )
+}
+
+fn profile_guidance(profile: &TaskProfile) -> &'static str {
+    match profile.as_str() {
+        "product" | "product-owner" | "product-manager" => {
+            "make the user problem, outcome, assumptions, non-goals, dependencies, and testable requirements explicit"
+        }
+        "qa" | "quality-assurance" | "tester" => {
+            "declare environment and risk; capture expected versus actual results, reproducibility, and negative or boundary coverage"
+        }
+        "security" | "security-engineer" => {
+            "confirm authorization and assets; preserve scope and evidence for likelihood, impact, mitigation, and residual risk"
+        }
+        "business-analysis" | "business-analyst" => {
+            "trace stakeholders, terminology, rules, exceptions, and current/future state to sources"
+        }
+        "database" | "database-administrator" | "dba" => {
+            "declare environment and read/write intent; verify schema, plans, blast radius, backup, and rollback before mutations"
+        }
+        "architecture" | "software-architect" => {
+            "record constraints, alternatives, trade-offs, failure modes, migration, rollback, and fitness checks"
+        }
+        "content" | "content-creator" | "writer" | "editor" => {
+            "define audience and channel; verify claims, sources, rights, originality, accessibility, and editorial acceptance"
+        }
+        "statistics" | "statistician" | "data-analyst" => {
+            "define population and data lineage; verify methods, assumptions, uncertainty, bias, reproducibility, and claim alignment"
+        }
+        _ => {
+            "use role-appropriate sources, explicit constraints, testable acceptance criteria, and evidence-backed final review"
+        }
+    }
 }
 
 fn task_signature(task: Option<&TaskState>) -> String {
@@ -1395,6 +1725,27 @@ fn normalize_task_items(label: &str, items: &[String], max_items: usize) -> Resu
         .collect()
 }
 
+fn normalize_resource(label: &str, resource: &str) -> Result<String> {
+    let resource = resource.trim();
+    if resource.chars().count() > MAX_TASK_ITEM_CHARS || resource.chars().any(char::is_control) {
+        bail!("{label} exceeds safe input bounds");
+    }
+    let Some((kind, value)) = resource.split_once(':') else {
+        bail!("{label} must use `<kind>:<value>` syntax");
+    };
+    let kind = kind.trim().to_ascii_lowercase();
+    let value = value.trim().trim_end_matches('/');
+    if kind.is_empty()
+        || value.is_empty()
+        || !kind
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-_".contains(character))
+    {
+        bail!("{label} must use a simple kind and non-empty value");
+    }
+    Ok(format!("{kind}:{value}"))
+}
+
 fn normalize_scope(scope: &str) -> Result<String> {
     let scope = Path::new(scope.trim());
     if scope.as_os_str().is_empty() || scope.is_absolute() {
@@ -1441,6 +1792,78 @@ fn path_in_scope(path: &str, scope: &str) -> bool {
         || path
             .strip_prefix(scope)
             .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn resource_in_scope(resource: &str, scope: &str) -> bool {
+    resource == scope
+        || resource
+            .strip_prefix(scope)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn collect_tool_resources(payload: &Value) -> Vec<String> {
+    let mut resources = Vec::new();
+    if let Some(name) = payload
+        .get("tool_name")
+        .or_else(|| payload.get("toolName"))
+        .or_else(|| payload.pointer("/toolCall/name"))
+        .and_then(Value::as_str)
+    {
+        let normalized = if let Some(name) = name.strip_prefix("mcp__") {
+            format!("mcp:{}", name.replace("__", "/"))
+        } else {
+            format!("tool:{name}")
+        };
+        if let Ok(resource) = normalize_resource("tool resource", &normalized) {
+            resources.push(resource);
+        }
+    }
+    let tool_input = payload
+        .get("tool_input")
+        .or_else(|| payload.pointer("/toolCall/args"))
+        .unwrap_or(&Value::Null);
+    collect_resource_fields(tool_input, None, &mut resources);
+    resources.sort();
+    resources.dedup();
+    resources
+}
+
+fn collect_resource_fields(value: &Value, key: Option<&str>, resources: &mut Vec<String>) {
+    match value {
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                collect_resource_fields(value, Some(key), resources);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_resource_fields(value, key, resources);
+            }
+        }
+        Value::String(value) => {
+            let Some(kind) = key.and_then(resource_kind) else {
+                return;
+            };
+            if let Ok(resource) = normalize_resource("tool resource", &format!("{kind}:{value}")) {
+                resources.push(resource);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn resource_kind(key: &str) -> Option<&'static str> {
+    match key.to_ascii_lowercase().as_str() {
+        "url" | "uri" | "endpoint" => Some("url"),
+        "database" | "database_name" | "db" => Some("database"),
+        "table" | "table_name" => Some("table"),
+        "schema" | "schema_name" => Some("schema"),
+        "environment" | "env" => Some("environment"),
+        "server" | "server_name" => Some("server"),
+        "host" | "hostname" => Some("host"),
+        "project" | "project_id" => Some("project"),
+        _ => None,
+    }
 }
 
 fn collect_tool_paths(value: &Value, key: Option<&str>, paths: &mut Vec<String>) {
@@ -1511,9 +1934,16 @@ fn read_task(root: &Path, session: &str) -> Result<Option<TaskState>> {
             return Err(error).with_context(|| format!("failed to read {}", path.display()))
         }
     };
-    serde_json::from_str(&source)
-        .with_context(|| format!("failed to parse {}", path.display()))
-        .map(Some)
+    let task: TaskState = serde_json::from_str(&source)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    if task.version == 0 || task.version > TASK_STATE_VERSION {
+        bail!(
+            "unsupported ForgeGuard task version {} in {}",
+            task.version,
+            path.display()
+        );
+    }
+    Ok(Some(task))
 }
 
 fn write_task(root: &Path, task: &TaskState) -> Result<()> {

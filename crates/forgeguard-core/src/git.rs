@@ -195,7 +195,7 @@ fn parse_added_range(line: &str) -> Option<(usize, usize)> {
     let (start, count) = range
         .strip_prefix('+')?
         .split_once(',')
-        .map_or((range.strip_prefix('+')?, "1"), |parts| parts);
+        .unwrap_or((range.strip_prefix('+')?, "1"));
     let start: usize = start.parse().ok()?;
     let count: usize = count.parse().ok()?;
     (count > 0).then(|| (start, start.saturating_add(count - 1)))

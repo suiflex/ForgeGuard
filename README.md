@@ -153,9 +153,9 @@ The version in `npm/package.json` must match the GitHub Release tag, and release
 
 ## Updating
 
-`forgeguard update` only *checks* whether a newer release exists and prints a one-line
-notice; it never installs anything. Upgrading is re-running the installer, then refreshing the
-assets ForgeGuard already wrote.
+`forgeguard update` checks whether a newer release exists and automatically installs
+the latest version if an update is available. Pass `--check` to check for updates
+without installing.
 
 ### Upgrade the binary and global assets
 
@@ -190,12 +190,17 @@ Check the installed version at any time:
 forgeguard --version
 ```
 
-Check whether a newer release exists (checks only; installs nothing):
+Check whether a newer release exists without installing:
+
+```bash
+forgeguard update --check
+```
+
+Update ForgeGuard directly to the latest release:
 
 ```bash
 forgeguard update
 ```
-
 ### Refresh an already-initialized project
 
 New releases can ship updated policy files and engineering skills. A plain `forgeguard init`

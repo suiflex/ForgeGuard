@@ -1,13 +1,19 @@
 name: PR Triage
 
-# Everything that labels a pull request, in one place. Two jobs because they
-# own different things:
+# Two jobs because they own different things, and they MUST run in order:
 #
 #   triage — a thin caller into the organization's shared workflow, so that
 #            every repository in suiflex marks authorship and conventional-commit
 #            types the same way and a change to that lands once, upstream.
 #   label  — this repository's own path -> area map (.github/labeler.yml), which
 #            is specific to this workspace's layout and has no business upstream.
+#
+# The `needs` is not cosmetic: actions/labeler writes the full label set with
+# a single "set labels" call, replacing whatever it read at start. Run the
+# jobs in parallel and the labeler's read can race the triage job's writes,
+# and its PUT then erases the org labels (bot, maintainer, commit: *) that
+# were applied a second earlier — observed on PR #66. Serializing makes the
+# labeler's read happen after triage is done.
 #
 # Both label as suiflex-bot, so a pull request never shows two identities doing
 # the same job.
@@ -38,6 +44,9 @@ jobs:
       private_key: ${{ secrets.SUIFLEX_BOT_PRIVATE_KEY }}
 
   label:
+    # Serialize on triage: labeler replaces the whole label set in one write,
+    # so it must read only after triage finished applying its labels.
+    needs: triage
     # Forks of this repository have their own labels, if any.
     if: github.repository_owner == 'suiflex'
     runs-on: ubuntu-latest

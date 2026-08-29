@@ -1,0 +1,44 @@
+# Path -> label map for the PR area labeler (the `label` job in
+# .github/workflows/suiflex.yml).
+#
+# One entry per component: a reviewer can tell from the label row which
+# parts of the workspace a pull request touches without opening the diff.
+
+"area: cli":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/forgeguard-cli/**"
+
+"area: core":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/forgeguard-core/**"
+
+"area: skills":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/forgeguard-core/assets/**"
+
+"area: packaging":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "npm/**"
+          - "packaging/**"
+          - "install.sh"
+          - "install.ps1"
+
+"area: tests":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "tests/**"
+
+"area: ci":
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+
+"area: docs":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "*.md"
+          - "docs/**"

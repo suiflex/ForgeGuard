@@ -1,5 +1,5 @@
 version = 2
-mode = "default"
+mode = "strict"
 
 [project]
 name = "ForgeGuard"

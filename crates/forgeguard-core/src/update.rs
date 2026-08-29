@@ -17,7 +17,11 @@ use serde::{Deserialize, Serialize};
 
 const REPOSITORY_URL: &str = "https://github.com/suiflex/ForgeGuard";
 const CACHE_RELATIVE: &str = ".forgeguard/update-check.json";
-const INSTALL_COMMAND: &str =
+#[cfg(windows)]
+pub const INSTALL_COMMAND: &str =
+    "irm https://raw.githubusercontent.com/suiflex/ForgeGuard/main/install.ps1 | iex";
+#[cfg(not(windows))]
+pub const INSTALL_COMMAND: &str =
     "curl -fsSL https://raw.githubusercontent.com/suiflex/ForgeGuard/main/install.sh | sh";
 const THROTTLE_SECONDS: u64 = 86_400;
 
@@ -31,6 +35,47 @@ struct UpdateCache {
     latest: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateCheck {
+    pub current: String,
+    pub latest: String,
+    pub update_available: bool,
+}
+
+/// Query whether a newer release exists, checking the remote if the cache is stale
+/// or `force` is true.
+pub fn check_for_update(home: &Path, force: bool) -> Option<UpdateCheck> {
+    check_for_update_for(home, force, current_version())
+}
+
+pub fn check_for_update_for(
+    home: &Path,
+    force: bool,
+    current_version: &str,
+) -> Option<UpdateCheck> {
+    if force || is_stale(home) {
+        if let Some(latest) = fetch_latest_version() {
+            write_cache(
+                home,
+                &UpdateCache {
+                    checked_at: now_seconds(),
+                    latest,
+                },
+            );
+        }
+    }
+    let cache = read_cache(home)?;
+    let latest = cache.latest;
+    let update_available = match (parse_version(&latest), parse_version(current_version)) {
+        (Some(latest_ver), Some(current_ver)) => latest_ver > current_ver,
+        _ => false,
+    };
+    Some(UpdateCheck {
+        current: current_version.to_owned(),
+        latest,
+        update_available,
+    })
+}
 /// One-line optional notice built from the cached latest version. Never touches
 /// the network; safe to call on every hook invocation.
 pub fn cached_notice(home: &Path) -> Option<String> {
@@ -50,18 +95,12 @@ pub fn refresh(home: &Path, force: bool) -> Option<String> {
 }
 
 pub fn refresh_for(home: &Path, force: bool, current_version: &str) -> Option<String> {
-    if force || is_stale(home) {
-        if let Some(latest) = fetch_latest_version() {
-            write_cache(
-                home,
-                &UpdateCache {
-                    checked_at: now_seconds(),
-                    latest,
-                },
-            );
-        }
+    let check = check_for_update_for(home, force, current_version)?;
+    if check.update_available {
+        notice(current_version, &check.latest)
+    } else {
+        None
     }
-    cached_notice_for(home, current_version)
 }
 
 /// Launch a detached refresh when the cache is missing or older than the
@@ -76,7 +115,7 @@ pub fn spawn_refresh_if_stale(home: &Path) {
     };
     let _ = Command::new(executable)
         .arg("update")
-        .stdin(Stdio::null())
+        .arg("--check")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
@@ -86,10 +125,27 @@ pub fn spawn_refresh_if_stale(home: &Path) {
 /// (`curl -fsSL .../install.sh | sh`), with inherited stdio so install output
 /// is visible. Used only when a user has explicitly confirmed an `ask`-mode
 /// update prompt; never called automatically.
+#[cfg(not(windows))]
 pub fn run_install_command() -> io::Result<ExitStatus> {
     Command::new("sh")
         .arg("-c")
         .arg(INSTALL_COMMAND)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+}
+
+#[cfg(windows)]
+pub fn run_install_command() -> io::Result<ExitStatus> {
+    Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            INSTALL_COMMAND,
+        ])
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -188,5 +244,27 @@ mod tests {
         assert!(notice("0.2.0", "0.3.0").is_some());
         assert!(notice("0.2.0", "0.2.0").is_none());
         assert!(notice("0.3.0", "0.2.9").is_none());
+    }
+
+    #[test]
+    fn check_for_update_detects_newer_version() {
+        let home = tempfile::tempdir().expect("temp home");
+        write_cache(
+            home.path(),
+            &UpdateCache {
+                checked_at: now_seconds(),
+                latest: "1.0.0".to_owned(),
+            },
+        );
+        let check = check_for_update_for(home.path(), false, "0.9.0").expect("check result");
+        assert_eq!(check.current, "0.9.0");
+        assert_eq!(check.latest, "1.0.0");
+        assert!(check.update_available);
+
+        let same = check_for_update_for(home.path(), false, "1.0.0").expect("check result");
+        assert!(!same.update_available);
+
+        let older = check_for_update_for(home.path(), false, "1.1.0").expect("check result");
+        assert!(!older.update_available);
     }
 }

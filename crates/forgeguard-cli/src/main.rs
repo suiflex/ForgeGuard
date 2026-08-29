@@ -128,17 +128,21 @@ enum Commands {
         #[command(subcommand)]
         command: Box<TaskCommands>,
     },
-    /// Check for a newer release, or change the update policy.
+    /// Update ForgeGuard to the latest release, check for updates, or change the update policy.
     ///
-    /// With no `--mode`, checks and prints a notice; `auto`/`off` never
-    /// install anything. `ask` mode also gates other TTY-run commands
-    /// (`init`, `doctor`, `gate`, `review`, `baseline`) with a y/n prompt
-    /// when a newer version is cached, and installs only on explicit "yes".
+    /// Running `forgeguard update` checks for a newer release and installs it
+    /// directly if available. Pass `--check` to check without installing.
     Update {
+        /// Only check for updates without installing
+        #[arg(long)]
+        check: bool,
+        /// Update policy to set (`auto`, `ask`, `off`)
         #[arg(long, value_enum)]
         mode: Option<UpdatePolicyArg>,
+        /// Apply update policy globally
         #[arg(long)]
         global: bool,
+        /// Output in JSON format
         #[arg(long)]
         json: bool,
     },
@@ -636,12 +640,18 @@ fn execute() -> Result<ExitCode> {
             command: HookCommands::Scope { agent, global },
         } => execute_scope_hook(&root, agent.into(), global),
         Commands::Task { command } => execute_task(&root, *command),
-        Commands::Update { mode, global, json } => execute_update(&root, mode, global, json),
+        Commands::Update {
+            check,
+            mode,
+            global,
+            json,
+        } => execute_update(&root, check, mode, global, json),
     }
 }
 
 fn execute_update(
     root: &Path,
+    check: bool,
     mode: Option<UpdatePolicyArg>,
     global: bool,
     json: bool,
@@ -674,11 +684,130 @@ fn execute_update(
     }
 
     let home = home_directory()?;
-    match forgeguard_core::update::refresh_for(&home, true, VERSION) {
-        Some(notice) => println!("{notice}"),
-        None => println!("ForgeGuard {VERSION} is up to date."),
+    let update_info = forgeguard_core::update::check_for_update_for(&home, true, VERSION);
+
+    if check {
+        match update_info {
+            Some(info) if info.update_available => {
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "status": "update_available",
+                            "current": info.current,
+                            "latest": info.latest,
+                            "update_available": true,
+                        })
+                    );
+                } else {
+                    println!(
+                        "A newer version of ForgeGuard is available: {} (current: {}).",
+                        info.latest, info.current
+                    );
+                    println!("Run `forgeguard update` to install the update.");
+                }
+            }
+            Some(info) => {
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "status": "up_to_date",
+                            "version": info.current,
+                            "update_available": false,
+                        })
+                    );
+                } else {
+                    println!("ForgeGuard {} is up to date.", info.current);
+                }
+            }
+            None => {
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "status": "unknown",
+                            "version": VERSION,
+                            "update_available": false,
+                        })
+                    );
+                } else {
+                    println!(
+                        "ForgeGuard {VERSION} is up to date (could not check remote release)."
+                    );
+                }
+            }
+        }
+        return Ok(ExitCode::SUCCESS);
     }
-    Ok(ExitCode::SUCCESS)
+
+    match update_info {
+        Some(info) if info.update_available => {
+            if !json {
+                println!(
+                    "Updating ForgeGuard from v{} to v{}...",
+                    info.current, info.latest
+                );
+            }
+            let status = forgeguard_core::update::run_install_command()?;
+            if status.success() {
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "status": "updated",
+                            "from": info.current,
+                            "to": info.latest,
+                        })
+                    );
+                } else {
+                    println!("ForgeGuard successfully updated to v{}.", info.latest);
+                }
+                Ok(ExitCode::SUCCESS)
+            } else {
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "status": "error",
+                            "message": format!("Update installer exited with {status}"),
+                        })
+                    );
+                } else {
+                    eprintln!("ForgeGuard update command exited with {status}.");
+                }
+                Ok(ExitCode::from(1))
+            }
+        }
+        Some(info) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "status": "up_to_date",
+                        "version": info.current,
+                    })
+                );
+            } else {
+                println!("ForgeGuard {} is up to date.", info.current);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        None => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "status": "up_to_date",
+                        "version": VERSION,
+                    })
+                );
+            } else {
+                println!("ForgeGuard {VERSION} is up to date (could not check remote release).");
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+    }
 }
 
 fn execute_mode(root: &Path, mode: Option<ModeArg>, global: bool, json: bool) -> Result<ExitCode> {

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.0](https://github.com/suiflex/ForgeGuard/compare/v0.14.0...v0.15.0) (2026-08-29)
+
+
+### Features
+
+* **cli:** execute in-place installation on forgeguard update ([e441acd](https://github.com/suiflex/ForgeGuard/commit/e441acdd67bbb0441c0a7444420cb147d8033fec))
+* install updates directly from forgeguard update ([a246210](https://github.com/suiflex/ForgeGuard/commit/a246210be9bfd29cbbec8128e9a2eae1e32d4bd0))
+
 ## [0.14.0](https://github.com/suiflex/ForgeGuard/compare/v0.13.0...v0.14.0) (2026-08-22)
 
 

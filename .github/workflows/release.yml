@@ -32,7 +32,7 @@ jobs:
           tag="${{ inputs.tag || github.ref_name }}"
           package_version="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/forgeguard-cli/Cargo.toml | head -1)"
           test "${tag#v}" = "$package_version"
-      - uses: dtolnay/rust-toolchain@788abdaa468b02b2d53a3d1d8fcac62dc9858f4a # stable
+      - uses: dtolnay/rust-toolchain@688313b0823df1393bcebb1b4add0438a6d36884 # stable
         with:
           components: rustfmt, clippy
       - name: Sync Cargo.lock to this release's version
@@ -103,7 +103,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.tag || github.ref_name }}
-      - uses: dtolnay/rust-toolchain@788abdaa468b02b2d53a3d1d8fcac62dc9858f4a # stable
+      - uses: dtolnay/rust-toolchain@688313b0823df1393bcebb1b4add0438a6d36884 # stable
         with:
           targets: ${{ matrix.target }}
       - name: Sync Cargo.lock to this release's version

@@ -170,12 +170,26 @@ fn fetch_latest_version() -> Option<String> {
     if !output.status.success() {
         return None;
     }
-    String::from_utf8_lossy(&output.stdout)
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let tags = stdout
         .lines()
-        .filter_map(|line| line.rsplit("refs/tags/").next())
-        .filter_map(|tag| parse_version(tag.strip_prefix('v').unwrap_or(tag)))
-        .max()
-        .map(|(major, minor, patch)| format!("{major}.{minor}.{patch}"))
+        .filter_map(|line| line.rsplit("refs/tags/").next());
+    latest_release_tag(tags)
+}
+
+/// Pick the highest stable `X.Y.Z` from raw tag names (optionally `v`-prefixed
+/// and possibly carrying prerelease/build suffixes). Prerelease and build tags
+/// are never the "latest" offered as an update.
+fn latest_release_tag<'a>(tags: impl Iterator<Item = &'a str>) -> Option<String> {
+    tags.filter_map(|tag| {
+        let tag = tag.strip_prefix('v').unwrap_or(tag);
+        if tag.contains('-') || tag.contains('+') {
+            return None;
+        }
+        parse_version(tag)
+    })
+    .max()
+    .map(|(major, minor, patch)| format!("{major}.{minor}.{patch}"))
 }
 
 fn notice(current: &str, latest: &str) -> Option<String> {
@@ -189,7 +203,8 @@ fn notice(current: &str, latest: &str) -> Option<String> {
 }
 
 fn parse_version(value: &str) -> Option<(u64, u64, u64)> {
-    let core = value.trim().split(['-', '+']).next()?;
+    let value = value.trim().strip_prefix('v').unwrap_or(value.trim());
+    let core = value.split(['-', '+']).next()?;
     let mut parts = core.split('.');
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next()?.parse().ok()?;
@@ -235,8 +250,35 @@ mod tests {
         assert_eq!(parse_version("0.3.0"), Some((0, 3, 0)));
         assert_eq!(parse_version("1.2"), Some((1, 2, 0)));
         assert_eq!(parse_version("2.0.1-rc.1"), Some((2, 0, 1)));
+        assert_eq!(parse_version("v0.18.0"), Some((0, 18, 0)));
+        assert_eq!(parse_version("v1.2"), Some((1, 2, 0)));
         assert_eq!(parse_version("not-a-version"), None);
         assert_eq!(parse_version("1.2.3.4"), None);
+    }
+
+    #[test]
+    fn latest_selection_ignores_prerelease_and_build_tags() {
+        let tags = [
+            "refs/tags/v0.18.0",
+            "refs/tags/v0.19.0-rc.1",
+            "refs/tags/v0.19.0+sha.abc",
+            "refs/tags/v0.17.2",
+        ];
+        let selected = latest_release_tag(
+            tags.iter()
+                .filter_map(|line| line.rsplit("refs/tags/").next()),
+        );
+        assert_eq!(selected.as_deref(), Some("0.18.0"));
+    }
+
+    #[test]
+    fn latest_selection_is_none_when_only_prerelease_tags_exist() {
+        let tags = ["refs/tags/v0.19.0-rc.1"];
+        let selected = latest_release_tag(
+            tags.iter()
+                .filter_map(|line| line.rsplit("refs/tags/").next()),
+        );
+        assert_eq!(selected, None);
     }
 
     #[test]

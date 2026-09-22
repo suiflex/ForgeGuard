@@ -630,6 +630,7 @@ When run in a terminal without an explicit mode, `forgeguard mode` opens the sam
 | `forgeguard capabilities` | Show workflow, parser, structural-rule, and semantic-pack coverage. |
 | `forgeguard doctor` | Verify configuration, Git, and required local tools. |
 | `forgeguard mode` | Check or change the current repository's Code Guard mode. |
+| `forgeguard update` | Check for a newer release and install it; `--check` only reports without installing. |
 | `forgeguard config migrate` | Upgrade config v1 to v2 and append newly detected command presets without resetting existing commands or focus settings. |
 | `forgeguard gate` | Run static rules and configured quality commands; `--changed --base <ref>` scopes findings to new code. |
 | `forgeguard review` | Scan added/edited Git lines without running commands; `--base <ref>` compares a branch or pull request. |

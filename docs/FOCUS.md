@@ -151,4 +151,8 @@ forgeguard init --force
 forgeguard doctor
 ```
 
-`--force` regenerates `.forgeguard/config.toml`. Back up custom commands or modes first, then reapply them after refresh. Existing committed baselines are preserved.
+`--force` replaces only the ForgeGuard-owned policy and skill files and prunes
+superseded role-skill directories. It never overwrites `.forgeguard/config.toml`:
+custom commands, mode, and focus settings are preserved, and newly detected
+command presets are appended without touching what you already configured.
+Existing committed baselines are preserved.

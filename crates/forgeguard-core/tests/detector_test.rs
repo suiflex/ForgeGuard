@@ -201,3 +201,46 @@ fn detects_flutter_and_native_quality_commands() {
         .iter()
         .any(|command| command.command == "flutter test"));
 }
+
+#[test]
+fn detects_cmake_build_and_test_commands() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(
+        directory.path().join("CMakeLists.txt"),
+        "cmake_minimum_required(VERSION 3.16)\n",
+    )
+    .expect("write CMake manifest");
+
+    let detection = detect_project(directory.path()).expect("detect project");
+
+    assert!(detection.languages.contains(&"C/C++".to_owned()));
+    assert!(detection.package_managers.contains(&"CMake".to_owned()));
+    assert!(detection
+        .suggested_commands
+        .iter()
+        .any(|command| command.command == "cmake -S . -B build && cmake --build build"));
+    assert!(detection
+        .suggested_commands
+        .iter()
+        .any(|command| command.command
+            == "cmake -S . -B build && ctest --test-dir build --output-on-failure"));
+}
+
+#[test]
+fn detects_makefile_build_and_test_commands() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(directory.path().join("Makefile"), "all:\n\techo ok\n").expect("write Makefile");
+
+    let detection = detect_project(directory.path()).expect("detect project");
+
+    assert!(detection.languages.contains(&"C/C++".to_owned()));
+    assert!(detection.package_managers.contains(&"Make".to_owned()));
+    assert!(detection
+        .suggested_commands
+        .iter()
+        .any(|command| command.command == "make"));
+    assert!(detection
+        .suggested_commands
+        .iter()
+        .any(|command| command.command == "make test"));
+}

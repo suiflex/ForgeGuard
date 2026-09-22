@@ -107,50 +107,17 @@ pub fn detect_project(root: &Path) -> Result<ProjectDetection> {
         )?;
     }
 
-    if root.join("pom.xml").exists() {
-        languages.insert("Java/Kotlin".to_owned());
-        package_managers.insert("Maven".to_owned());
-        test_tools.insert("Maven test".to_owned());
-        add_command(&mut commands, "test", "mvn test", true);
-        add_command(&mut commands, "build", "mvn package -DskipTests", true);
-        add_optional_command(
+    if root.join("pom.xml").exists()
+        || root.join("build.gradle").exists()
+        || root.join("build.gradle.kts").exists()
+    {
+        detect_java_kotlin(
+            &root,
+            &mut languages,
+            &mut package_managers,
+            &mut test_tools,
             &mut commands,
-            "dependency-audit",
-            "mvn org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=0",
         );
-        add_optional_command(
-            &mut commands,
-            "sbom",
-            "mvn org.cyclonedx:cyclonedx-maven-plugin:makeAggregateBom",
-        );
-    } else if root.join("build.gradle").exists() || root.join("build.gradle.kts").exists() {
-        languages.insert("Java/Kotlin".to_owned());
-        package_managers.insert("Gradle".to_owned());
-        let gradle = if root.join("gradlew").exists() {
-            "./gradlew"
-        } else {
-            "gradle"
-        };
-        add_command(&mut commands, "test", &format!("{gradle} test"), true);
-        add_command(
-            &mut commands,
-            "build",
-            &format!("{gradle} build -x test"),
-            true,
-        );
-        let build_source = fs::read_to_string(root.join("build.gradle"))
-            .or_else(|_| fs::read_to_string(root.join("build.gradle.kts")))
-            .unwrap_or_default();
-        if build_source.contains("dependency-check") {
-            add_optional_command(
-                &mut commands,
-                "dependency-audit",
-                &format!("{gradle} dependencyCheckAnalyze"),
-            );
-        }
-        if build_source.to_ascii_lowercase().contains("cyclonedx") {
-            add_optional_command(&mut commands, "sbom", &format!("{gradle} cyclonedxBom"));
-        }
     }
 
     if root.join("Package.swift").exists() {
@@ -163,28 +130,13 @@ pub fn detect_project(root: &Path) -> Result<ProjectDetection> {
 
     let pubspec = root.join("pubspec.yaml");
     if pubspec.exists() {
-        languages.insert("Dart".to_owned());
-        package_managers.insert("pub".to_owned());
-        let source = fs::read_to_string(&pubspec).unwrap_or_default();
-        let flutter = source.lines().any(|line| line.trim() == "flutter:");
-        if flutter {
-            frameworks.insert("Flutter".to_owned());
-            test_tools.insert("flutter test".to_owned());
-        } else {
-            test_tools.insert("dart test".to_owned());
-        }
-        add_command(
+        detect_dart(
+            &pubspec,
+            &mut languages,
+            &mut frameworks,
+            &mut package_managers,
+            &mut test_tools,
             &mut commands,
-            "format",
-            "dart format --output=none --set-exit-if-changed .",
-            true,
-        );
-        add_command(&mut commands, "lint", "dart analyze", true);
-        add_command(
-            &mut commands,
-            "test",
-            if flutter { "flutter test" } else { "dart test" },
-            true,
         );
     }
 
@@ -213,6 +165,20 @@ pub fn detect_project(root: &Path) -> Result<ProjectDetection> {
         add_optional_command(&mut commands, "dependency-audit", "composer audit");
     }
 
+    let has_cmake = root.join("CMakeLists.txt").exists();
+    let has_makefile = ["Makefile", "makefile", "GNUmakefile"]
+        .iter()
+        .any(|name| root.join(name).exists());
+    if has_cmake || has_makefile {
+        detect_ccpp(
+            has_cmake,
+            &mut languages,
+            &mut package_managers,
+            &mut test_tools,
+            &mut commands,
+        );
+    }
+
     if root.join("Gemfile").exists() {
         languages.insert("Ruby".to_owned());
         package_managers.insert("Bundler".to_owned());
@@ -223,12 +189,7 @@ pub fn detect_project(root: &Path) -> Result<ProjectDetection> {
         );
     }
 
-    if root.join("schema.prisma").exists() || root.join("prisma/schema.prisma").exists() {
-        database_tools.insert("Prisma".to_owned());
-    }
-    if root.join("migrations").exists() || root.join("db/migrations").exists() {
-        database_tools.insert("SQL migrations".to_owned());
-    }
+    detect_database_tools(&root, &mut database_tools);
 
     Ok(ProjectDetection {
         root,
@@ -474,6 +435,133 @@ fn detect_python(
     }
 
     Ok(())
+}
+
+/// Add C/C++ build and test presets. CMake presets configure and build in one
+/// step so a fresh checkout works, then run CTest against the build directory.
+fn detect_ccpp(
+    uses_cmake: bool,
+    languages: &mut BTreeSet<String>,
+    package_managers: &mut BTreeSet<String>,
+    test_tools: &mut BTreeSet<String>,
+    commands: &mut BTreeMap<String, CommandConfig>,
+) {
+    languages.insert("C/C++".to_owned());
+    test_tools.insert("C/C++ test".to_owned());
+    if uses_cmake {
+        package_managers.insert("CMake".to_owned());
+        add_command(
+            commands,
+            "build",
+            "cmake -S . -B build && cmake --build build",
+            true,
+        );
+        add_command(
+            commands,
+            "test",
+            "cmake -S . -B build && ctest --test-dir build --output-on-failure",
+            true,
+        );
+    } else {
+        package_managers.insert("Make".to_owned());
+        add_command(commands, "build", "make", true);
+        add_command(commands, "test", "make test", true);
+    }
+}
+
+/// Add Maven or Gradle build/test/audit presets for a Java/Kotlin project.
+fn detect_java_kotlin(
+    root: &Path,
+    languages: &mut BTreeSet<String>,
+    package_managers: &mut BTreeSet<String>,
+    test_tools: &mut BTreeSet<String>,
+    commands: &mut BTreeMap<String, CommandConfig>,
+) {
+    languages.insert("Java/Kotlin".to_owned());
+    test_tools.insert("Maven test".to_owned());
+    if root.join("pom.xml").exists() {
+        package_managers.insert("Maven".to_owned());
+        add_command(commands, "test", "mvn test", true);
+        add_command(commands, "build", "mvn package -DskipTests", true);
+        add_optional_command(
+            commands,
+            "dependency-audit",
+            "mvn org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=0",
+        );
+        add_optional_command(
+            commands,
+            "sbom",
+            "mvn org.cyclonedx:cyclonedx-maven-plugin:makeAggregateBom",
+        );
+        return;
+    }
+    package_managers.insert("Gradle".to_owned());
+    let gradle = if root.join("gradlew").exists() {
+        "./gradlew"
+    } else {
+        "gradle"
+    };
+    add_command(commands, "test", &format!("{gradle} test"), true);
+    add_command(commands, "build", &format!("{gradle} build -x test"), true);
+    // forgeguard: allow FG-SEC-007 -- read-only scan of project-root config files
+    let build_source = fs::read_to_string(root.join("build.gradle"))
+        .or_else(|_| fs::read_to_string(root.join("build.gradle.kts")))
+        .unwrap_or_default();
+    if build_source.contains("dependency-check") {
+        add_optional_command(
+            commands,
+            "dependency-audit",
+            &format!("{gradle} dependencyCheckAnalyze"),
+        );
+    }
+    if build_source.to_ascii_lowercase().contains("cyclonedx") {
+        add_optional_command(commands, "sbom", &format!("{gradle} cyclonedxBom"));
+    }
+}
+
+/// Add Dart/Flutter format, lint, and test presets from a pubspec.
+fn detect_dart(
+    pubspec: &Path,
+    languages: &mut BTreeSet<String>,
+    frameworks: &mut BTreeSet<String>,
+    package_managers: &mut BTreeSet<String>,
+    test_tools: &mut BTreeSet<String>,
+    commands: &mut BTreeMap<String, CommandConfig>,
+) {
+    languages.insert("Dart".to_owned());
+    package_managers.insert("pub".to_owned());
+    // forgeguard: allow FG-SEC-007 -- read-only scan of project-root pubspec
+    let source = fs::read_to_string(pubspec).unwrap_or_default();
+    let flutter = source.lines().any(|line| line.trim() == "flutter:");
+    if flutter {
+        frameworks.insert("Flutter".to_owned());
+        test_tools.insert("flutter test".to_owned());
+    } else {
+        test_tools.insert("dart test".to_owned());
+    }
+    add_command(
+        commands,
+        "format",
+        "dart format --output=none --set-exit-if-changed .",
+        true,
+    );
+    add_command(commands, "lint", "dart analyze", true);
+    add_command(
+        commands,
+        "test",
+        if flutter { "flutter test" } else { "dart test" },
+        true,
+    );
+}
+
+/// Label database tooling from Prisma schemas and migration directories.
+fn detect_database_tools(root: &Path, database_tools: &mut BTreeSet<String>) {
+    if root.join("schema.prisma").exists() || root.join("prisma/schema.prisma").exists() {
+        database_tools.insert("Prisma".to_owned());
+    }
+    if root.join("migrations").exists() || root.join("db/migrations").exists() {
+        database_tools.insert("SQL migrations".to_owned());
+    }
 }
 
 fn dependency_names(value: &Value) -> BTreeSet<&str> {

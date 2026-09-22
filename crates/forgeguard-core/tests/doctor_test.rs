@@ -1,6 +1,6 @@
 use std::{fs, process::Command};
 
-use forgeguard_core::run_doctor;
+use forgeguard_core::{run_doctor, CommandConfig, ForgeGuardConfig};
 use tempfile::tempdir;
 
 #[test]
@@ -46,4 +46,58 @@ fn nested_repository_satisfies_workspace_git_check() {
     let report = run_doctor(directory.path(), None).expect("run doctor");
 
     assert!(report.git_repository);
+}
+
+#[test]
+fn local_wrapper_tool_resolves_against_the_repository_root() {
+    let directory = tempdir().expect("temp directory");
+    fs::write(directory.path().join("gradlew"), "#!/bin/sh\n").expect("write gradle wrapper");
+    let config = ForgeGuardConfig::new(
+        "sample",
+        vec![CommandConfig {
+            name: "test".to_owned(),
+            command: "./gradlew test".to_owned(),
+            required: true,
+            enabled: true,
+            timeout_seconds: 600,
+        }],
+    );
+
+    let report = run_doctor(directory.path(), Some(&config)).expect("run doctor");
+
+    let gradlew = report
+        .tools
+        .iter()
+        .find(|status| status.tool == "./gradlew")
+        .expect("gradlew tool status");
+    assert!(gradlew.available);
+    assert_eq!(
+        gradlew.path.as_deref(),
+        Some(directory.path().join("gradlew").as_path())
+    );
+}
+
+#[test]
+fn missing_local_wrapper_is_reported_unavailable() {
+    let directory = tempdir().expect("temp directory");
+    let config = ForgeGuardConfig::new(
+        "sample",
+        vec![CommandConfig {
+            name: "test".to_owned(),
+            command: "./gradlew test".to_owned(),
+            required: true,
+            enabled: true,
+            timeout_seconds: 600,
+        }],
+    );
+
+    let report = run_doctor(directory.path(), Some(&config)).expect("run doctor");
+
+    let gradlew = report
+        .tools
+        .iter()
+        .find(|status| status.tool == "./gradlew")
+        .expect("gradlew tool status");
+    assert!(!gradlew.available);
+    assert!(gradlew.path.is_none());
 }

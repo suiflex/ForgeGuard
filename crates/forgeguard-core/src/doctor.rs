@@ -61,7 +61,16 @@ pub fn run_doctor(root: &Path, config: Option<&ForgeGuardConfig>) -> Result<Doct
     let tools: Vec<ToolStatus> = tool_names
         .into_iter()
         .map(|tool| {
-            let path = find_in_path(&tool);
+            // A `./`-prefixed first token names a wrapper script inside the
+            // repository root (e.g. `./gradlew` produced by `forgeguard
+            // detect`), never a PATH entry. Resolve it against the root;
+            // anything else is looked up on PATH like the other tools.
+            let path = if let Some(relative) = tool.strip_prefix("./") {
+                let candidate = root.join(relative);
+                candidate.is_file().then_some(candidate)
+            } else {
+                find_in_path(&tool)
+            };
             ToolStatus {
                 tool,
                 available: path.is_some(),

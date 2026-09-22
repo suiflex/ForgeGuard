@@ -1,13 +1,18 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
-  "release-type": "rust",
+  "release-type": "simple",
   "include-component-in-tag": false,
   "packages": {
-    "crates/forgeguard-cli": {
+    ".": {
       "package-name": "forgeguard"
     }
   },
   "extra-files": [
+    {
+      "type": "toml",
+      "path": "/crates/forgeguard-cli/Cargo.toml",
+      "jsonpath": "$.package.version"
+    },
     {
       "type": "json",
       "path": "/npm/package.json",

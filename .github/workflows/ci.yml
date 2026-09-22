@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# Stacked pushes to a pull request supersede earlier CI runs; cancel them so
+# they do not queue duplicate full builds. Main is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   msrv:
     runs-on: ubuntu-latest

@@ -16,6 +16,11 @@ on:
 permissions:
   contents: read
 
+# A newer push supersedes the previous gate run on the same pull request.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   forgeguard:
     if: github.repository_owner == 'suiflex'

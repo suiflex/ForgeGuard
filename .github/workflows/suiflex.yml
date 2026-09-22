@@ -31,6 +31,11 @@ on:
   pull_request_target:
     types: [opened, reopened, synchronize]
 
+# Never leave two labelers racing the same pull request; a newer push wins.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 # Deliberately no workflow-level `permissions`: that would also narrow the
 # token handed down to the reusable workflow below. Each job states its own.
 

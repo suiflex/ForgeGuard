@@ -43,6 +43,24 @@ All notable changes to ForgeGuard will be documented here by Release Please.
 
 * **ci:** consolidate changelog to root and fix fold script ([9621e26](https://github.com/suiflex/ForgeGuard/commit/9621e2690209744b4caab86299479f5c4d7db8c7))
 
+## [0.19.0](https://github.com/suiflex/ForgeGuard/compare/v0.18.0...v0.19.0) (2026-09-22)
+
+
+### Features
+
+* **detector:** add C/C++ build and test command presets ([20f6f01](https://github.com/suiflex/ForgeGuard/commit/20f6f013b7a06bfe9e48449c5b7cd30f86f12fb7))
+* **detector:** add C/C++ build and test command presets ([5ffa68d](https://github.com/suiflex/ForgeGuard/commit/5ffa68d14775f7bc61c90189faf591ba41450923))
+
+
+### Bug Fixes
+
+* **ci:** scope release-please to root workspace ([3205186](https://github.com/suiflex/ForgeGuard/commit/32051865456928f411b67e0a23a53bad72edfa46))
+* **ci:** scope release-please to root workspace ([9e37ed9](https://github.com/suiflex/ForgeGuard/commit/9e37ed9af8efbd970a31f6a8a79e1837056398f8))
+* **doctor:** resolve ./-prefixed wrapper tools against the repo root ([5f40b8c](https://github.com/suiflex/ForgeGuard/commit/5f40b8c9ec55876629521f9a60a5b90d6cd2d4bb))
+* **doctor:** resolve `./`-prefixed wrapper tools against the repo root ([01dc23f](https://github.com/suiflex/ForgeGuard/commit/01dc23f094c018b86f7ea0dc5125bef43bf6be29))
+* **update:** ignore prerelease/build tags and accept v-prefixed versions ([ad467d5](https://github.com/suiflex/ForgeGuard/commit/ad467d5c59bfe87f470c39dfb1580947c60130aa))
+* **update:** ignore prerelease/build tags and accept v-prefixed versions ([333d230](https://github.com/suiflex/ForgeGuard/commit/333d2300b66ffe2f51d7f69ea94db0ca67686b54))
+
 ## [0.15.0](https://github.com/suiflex/ForgeGuard/compare/v0.14.0...v0.15.0) (2026-08-29)
 
 

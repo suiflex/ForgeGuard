@@ -9,9 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::Severity;
 
-pub const CONFIG_DIR: &str = ".forgeguard";
 pub const CONFIG_FILE: &str = ".forgeguard/config.toml";
-pub const GLOBAL_CONFIG_FILE: &str = ".forgeguard/config.toml";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -291,11 +289,11 @@ impl ForgeGuardConfig {
     }
 
     pub fn load_global(home: &Path) -> Result<Self> {
-        Self::load_from_path(&home.join(GLOBAL_CONFIG_FILE))
+        Self::load_from_path(&home.join(CONFIG_FILE))
     }
 
     pub fn save_global(&self, home: &Path) -> Result<()> {
-        self.save_to_path(&home.join(GLOBAL_CONFIG_FILE))
+        self.save_to_path(&home.join(CONFIG_FILE))
     }
 
     fn load_from_path(path: &Path) -> Result<Self> {

@@ -429,7 +429,7 @@ what was installed.
 | Claude Code | `claude` | `CLAUDE.md` | `.claude/skills` | `Stop` hook |
 | Cursor | `cursor` | `.cursor/rules` | `.agents/skills` | `stop` hook |
 | Antigravity | `antigravity` | `.agents/rules` | `.agents/skills` | Native `Stop` hook |
-| OpenCode | `opencode` | `AGENTS.md` | `.agents/skills` | Policy-enforced gate |
+| OpenCode | `opencode` | `AGENTS.md` | `.agents/skills` | Plugin `session.idle` auto-poke |
 | Hermes | `hermes` | `AGENTS.md` | `.agents/skills` | Policy-enforced gate |
 | OpenClaw | `openclaw` | `AGENTS.md` | `.agents/skills` | `before_agent_finalize` plugin hook |
 | omp | `omp` | `AGENTS.md` | `.agents/skills` | Policy-enforced gate |
@@ -455,7 +455,14 @@ OpenClaw gateway after installation. Hermes' completion hooks are observers, so 
 integration remains policy-enforced rather than claiming a blocking hook.
 omp natively discovers `~/.agents/skills/` and `.agents/skills/` with its default configuration (`skills.enableAgentsUser` and `skills.enableAgentsProject`), so `init --global` and repository `init` write the engineering skill there without mutating user configuration; its integration is policy-enforced via the skill and `AGENTS.md`.
 
-[OpenCode officially discovers](https://opencode.ai/docs/skills) both `AGENTS.md` and `.agents/skills`. Its current plugin lifecycle exposes `session.idle` only after the agent loop stops, so ForgeGuard does not claim a reliable blocking `Stop` hook there. The compact policy requires `forgeguard gate --changed --output compact` before completion. [Antigravity provides a native blocking `Stop` protocol](https://antigravity.google/docs/hooks), so failures automatically return the agent to its execution loop.
+OpenCode also receives a plugin in `.opencode/plugins/` (or `~/.config/opencode/plugins/`
+for `--global`). The plugin checks the gate when `session.idle` fires; a blocked result
+re-prompts the session with bounded findings, while a passing result stays silent. Since
+OpenCode emits this event after its agent loop stops and provides no blocking completion
+hook, this is observer-plus-auto-poke enforcement, not a hard completion block. The existing
+`max_auto_pokes`/`auto_poke` limits bound retries. [Antigravity provides a native blocking
+`Stop` protocol](https://antigravity.google/docs/hooks), so failures automatically return
+the agent to its execution loop.
 
 Other agents receive the universal CLI gate immediately. Agents that understand the emerging `AGENTS.md` and Agent Skills conventions also receive ForgeGuard guidance without a dedicated adapter.
 

@@ -113,6 +113,10 @@ fn agent_protocols_are_silent_or_structured() {
         render_hook_decision(HookAgent::OpenClaw, &HookDecision::Pass),
         ""
     );
+    assert_eq!(
+        render_hook_decision(HookAgent::OpenCode, &HookDecision::Pass),
+        ""
+    );
 
     let reason = "Fix failing tests".to_owned();
     let claude = render_hook_decision(HookAgent::Claude, &HookDecision::Block(reason.clone()));
@@ -124,6 +128,10 @@ fn agent_protocols_are_silent_or_structured() {
     );
     let openclaw = render_hook_decision(
         HookAgent::OpenClaw,
+        &HookDecision::Block("Fix failing tests".to_owned()),
+    );
+    let opencode = render_hook_decision(
+        HookAgent::OpenCode,
         &HookDecision::Block("Fix failing tests".to_owned()),
     );
     assert_eq!(
@@ -152,6 +160,14 @@ fn agent_protocols_are_silent_or_structured() {
         serde_json::from_str::<serde_json::Value>(&openclaw).expect("OpenClaw JSON")["action"],
         "revise"
     );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&opencode).expect("OpenCode JSON")["action"],
+        "revise"
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&opencode).expect("OpenCode JSON")["reason"],
+        "Fix failing tests"
+    );
 
     let codex_stop = render_hook_decision(
         HookAgent::Codex,
@@ -169,6 +185,14 @@ fn agent_protocols_are_silent_or_structured() {
             ["action"],
         "finalize"
     );
+    let opencode_stop = render_hook_decision(
+        HookAgent::OpenCode,
+        &HookDecision::Stop("No progress".to_owned()),
+    );
+    let opencode_stop: serde_json::Value =
+        serde_json::from_str(&opencode_stop).expect("OpenCode stop JSON");
+    assert_eq!(opencode_stop["action"], "finalize");
+    assert_eq!(opencode_stop["reason"], "No progress");
 }
 
 #[test]

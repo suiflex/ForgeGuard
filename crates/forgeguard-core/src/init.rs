@@ -16,6 +16,8 @@ const CURSOR_TEMPLATE: &str = include_str!("../assets/templates/CURSOR.md");
 const OPENCLAW_PLUGIN_MANIFEST: &str = include_str!("../assets/openclaw/openclaw.plugin.json");
 const OPENCLAW_PLUGIN_PACKAGE: &str = include_str!("../assets/openclaw/package.json");
 const OPENCLAW_PLUGIN_ENTRY: &str = include_str!("../assets/openclaw/index.js");
+const OPENCODE_PLUGIN: &str = include_str!("../assets/opencode/forgeguard.js");
+pub(crate) const OPENCODE_HOOK_COMMAND: &str = "forgeguard hook stop --agent opencode";
 const FORGEGUARD_GITIGNORE: &str = "cache/\nreports/\n";
 const AGENT_HOOK_FILES: [&str; 4] = [
     ".claude/settings.json",
@@ -230,7 +232,14 @@ const PROJECT_AGENT_MARKERS: &[(AgentTarget, &[&str])] = &[
     (AgentTarget::Codex, &[".codex"]),
     (AgentTarget::Claude, &[".claude"]),
     (AgentTarget::Cursor, &[".cursor", ".cursorrules"]),
-    (AgentTarget::OpenCode, &[".opencode", "opencode.json"]),
+    (
+        AgentTarget::OpenCode,
+        &[
+            ".opencode",
+            ".opencode/plugins/forgeguard.js",
+            "opencode.json",
+        ],
+    ),
     (AgentTarget::Hermes, &[".hermes"]),
     (AgentTarget::OpenClaw, &[".openclaw", "openclaw.json"]),
     (AgentTarget::Omp, &[".omp"]),
@@ -258,7 +267,10 @@ const GLOBAL_AGENT_MARKERS: &[(AgentTarget, &[&str])] = &[
     (AgentTarget::Codex, &[".codex"]),
     (AgentTarget::Claude, &[".claude"]),
     (AgentTarget::Cursor, &[".cursor"]),
-    (AgentTarget::OpenCode, &[".config/opencode"]),
+    (
+        AgentTarget::OpenCode,
+        &[".config/opencode", ".config/opencode/plugins/forgeguard.js"],
+    ),
     (AgentTarget::Hermes, &[".hermes"]),
     (AgentTarget::OpenClaw, &[".openclaw"]),
     (AgentTarget::Omp, &[".omp"]),
@@ -635,7 +647,12 @@ fn install_opencode(
         &skill_directory(Harness::OpenCode, scope)?,
         overwrite,
         log,
-    )
+    )?;
+    let plugin_path = match scope {
+        InstallScope::Project => root.join(".opencode/plugins/forgeguard.js"),
+        InstallScope::Global => root.join(".config/opencode/plugins/forgeguard.js"),
+    };
+    write_file(root, &plugin_path, OPENCODE_PLUGIN, overwrite, log)
 }
 
 fn install_shared_skill_agent(

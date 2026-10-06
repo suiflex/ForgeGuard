@@ -100,6 +100,10 @@ fn installs_configuration_for_all_supported_agents() {
     .expect("read algorithm policy");
     assert!(algorithm_policy.contains("Bound cache size, lifetime, and concurrent fan-out"));
     assert!(algorithm_policy.contains("actual bottleneck before optimizing"));
+    let opencode_plugin =
+        fs::read_to_string(directory.path().join(".opencode/plugins/forgeguard.js"))
+            .expect("read OpenCode plugin");
+    assert!(opencode_plugin.contains("forgeguard hook stop --agent opencode"));
     let doctor = forgeguard_core::run_doctor(directory.path(), None).expect("run doctor");
     assert!(doctor.hooks.iter().all(|hook| hook.configured));
     let codex_hooks: serde_json::Value = serde_json::from_str(
@@ -256,6 +260,13 @@ fn installs_global_general_guard_configuration_and_skills() {
         .join(".claude/skills/forgeguard-engineering/SKILL.md")
         .exists());
     assert!(directory.path().join(".config/opencode/AGENTS.md").exists());
+    let opencode_plugin = fs::read_to_string(
+        directory
+            .path()
+            .join(".config/opencode/plugins/forgeguard.js"),
+    )
+    .expect("read global OpenCode plugin");
+    assert!(opencode_plugin.contains("forgeguard hook stop --agent opencode"));
     assert!(directory
         .path()
         .join(".config/opencode/skills/forgeguard-engineering/SKILL.md")
@@ -707,6 +718,8 @@ fn detects_only_agents_with_configuration_present() {
     fs::create_dir_all(directory.path().join(".claude")).expect("create .claude");
     fs::create_dir_all(directory.path().join(".roo/rules")).expect("create .roo/rules");
     fs::create_dir_all(directory.path().join(".hermes")).expect("create .hermes");
+    fs::create_dir_all(directory.path().join(".opencode/plugins"))
+        .expect("create OpenCode plugin directory");
     fs::create_dir_all(directory.path().join(".openclaw")).expect("create .openclaw");
     fs::create_dir_all(directory.path().join(".github")).expect("create .github");
     fs::write(
@@ -721,11 +734,27 @@ fn detects_only_agents_with_configuration_present() {
         detected,
         vec![
             AgentTarget::Claude,
+            AgentTarget::OpenCode,
             AgentTarget::Hermes,
             AgentTarget::OpenClaw,
             AgentTarget::Copilot,
             AgentTarget::Roo,
         ]
+    );
+}
+
+#[test]
+fn detects_global_opencode_plugin_directory() {
+    let directory = tempdir().expect("home directory");
+    let plugin = directory
+        .path()
+        .join(".config/opencode/plugins/forgeguard.js");
+    fs::create_dir_all(plugin.parent().expect("plugin parent")).expect("create plugin directory");
+    fs::write(plugin, "plugin").expect("write plugin");
+
+    assert_eq!(
+        detect_installed_agents(directory.path(), true),
+        vec![AgentTarget::OpenCode]
     );
 }
 

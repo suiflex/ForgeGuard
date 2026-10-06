@@ -1,5 +1,9 @@
 import { spawn } from "node:child_process";
-const HOOK_COMMAND = "forgeguard hook stop --agent opencode";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+const GLOBAL_INSTALL = __FORGEGUARD_GLOBAL__;
+let HOOK_COMMAND = "forgeguard hook stop --agent opencode";
+if (GLOBAL_INSTALL) HOOK_COMMAND += " --global";
 const [FORGEGUARD_BIN, ...HOOK_ARGS] = HOOK_COMMAND.split(" ");
 
 function runForgeGuard(root, sessionId) {
@@ -36,11 +40,17 @@ export const ForgeGuardPlugin = async ({ client, directory }) => ({
   event: async ({ event }) => {
     if (event.type !== "session.idle") return;
 
+    const root = directory || process.cwd();
+    if (
+      GLOBAL_INSTALL &&
+      existsSync(join(root, ".opencode/plugins/forgeguard.js"))
+    ) return;
+
     const sessionId = event.properties?.sessionID;
     if (typeof sessionId !== "string" || !sessionId) return;
 
     try {
-      const decision = await runForgeGuard(directory || process.cwd(), sessionId);
+      const decision = await runForgeGuard(root, sessionId);
       if (decision?.action !== "revise" || typeof decision.reason !== "string") return;
       await client.session.prompt({
         path: { id: sessionId },

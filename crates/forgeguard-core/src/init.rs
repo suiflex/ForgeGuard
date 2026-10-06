@@ -652,7 +652,15 @@ fn install_opencode(
         InstallScope::Project => root.join(".opencode/plugins/forgeguard.js"),
         InstallScope::Global => root.join(".config/opencode/plugins/forgeguard.js"),
     };
-    write_file(root, &plugin_path, OPENCODE_PLUGIN, overwrite, log)
+    let plugin = OPENCODE_PLUGIN.replace(
+        "__FORGEGUARD_GLOBAL__",
+        if matches!(scope, InstallScope::Global) {
+            "true"
+        } else {
+            "false"
+        },
+    );
+    write_file(root, &plugin_path, &plugin, overwrite, log)
 }
 
 fn install_shared_skill_agent(

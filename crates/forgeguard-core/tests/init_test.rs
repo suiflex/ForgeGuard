@@ -267,6 +267,9 @@ fn installs_global_general_guard_configuration_and_skills() {
     )
     .expect("read global OpenCode plugin");
     assert!(opencode_plugin.contains("forgeguard hook stop --agent opencode"));
+    assert!(opencode_plugin.contains("const GLOBAL_INSTALL = true;"));
+    assert!(opencode_plugin.contains("HOOK_COMMAND += \" --global\""));
+    assert!(opencode_plugin.contains("existsSync(join(root, \".opencode/plugins/forgeguard.js\"))"));
     assert!(directory
         .path()
         .join(".config/opencode/skills/forgeguard-engineering/SKILL.md")
@@ -626,6 +629,10 @@ fn opencode_target_uses_shared_standards_without_unrelated_hooks() {
         .path()
         .join(".agents/skills/forgeguard-engineering/SKILL.md")
         .exists());
+    let opencode_plugin =
+        fs::read_to_string(directory.path().join(".opencode/plugins/forgeguard.js"))
+            .expect("read project OpenCode plugin");
+    assert!(opencode_plugin.contains("const GLOBAL_INSTALL = false;"));
     assert!(fs::read_to_string(
         directory
             .path()

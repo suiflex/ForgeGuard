@@ -43,6 +43,19 @@ All notable changes to ForgeGuard will be documented here by Release Please.
 
 * **ci:** consolidate changelog to root and fix fold script ([9621e26](https://github.com/suiflex/ForgeGuard/commit/9621e2690209744b4caab86299479f5c4d7db8c7))
 
+## [0.21.0](https://github.com/suiflex/ForgeGuard/compare/v0.20.0...v0.21.0) (2026-10-07)
+
+
+### Features
+
+* **opencode:** add completion auto-poke plugin ([5da22a1](https://github.com/suiflex/ForgeGuard/commit/5da22a144172e229b3c11ffb7ec48e0e272fb16c))
+* **opencode:** add completion auto-poke plugin ([6bdc436](https://github.com/suiflex/ForgeGuard/commit/6bdc4364c31bb8b6884c0ab05a484c8897a1b958)), closes [#113](https://github.com/suiflex/ForgeGuard/issues/113)
+
+
+### Bug Fixes
+
+* **opencode:** scope global completion plugin ([f1d2498](https://github.com/suiflex/ForgeGuard/commit/f1d2498f53de863261060805bcc40ab12c559cbf))
+
 ## [0.20.0](https://github.com/suiflex/ForgeGuard/compare/v0.19.0...v0.20.0) (2026-10-03)
 
 

@@ -126,6 +126,7 @@ pub enum HookAgent {
     Cursor,
     Antigravity,
     OpenClaw,
+    OpenCode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -629,7 +630,6 @@ pub fn render_hook_decision(agent: HookAgent, decision: &HookDecision) -> String
     match (agent, decision) {
         (HookAgent::Cursor, HookDecision::Pass) => "{}".to_owned(),
         (HookAgent::Antigravity, HookDecision::Pass) => json!({"decision": "stop"}).to_string(),
-        (HookAgent::OpenClaw, HookDecision::Pass) => String::new(),
         (_, HookDecision::Pass) => String::new(),
         (HookAgent::Claude, HookDecision::Block(reason)) => {
             json!({"decision": "block", "reason": reason}).to_string()
@@ -645,7 +645,7 @@ pub fn render_hook_decision(agent: HookAgent, decision: &HookDecision) -> String
             "reason": reason
         })
         .to_string(),
-        (HookAgent::OpenClaw, HookDecision::Block(reason)) => json!({
+        (HookAgent::OpenClaw | HookAgent::OpenCode, HookDecision::Block(reason)) => json!({
             "action": "revise",
             "reason": reason
         })
@@ -654,7 +654,7 @@ pub fn render_hook_decision(agent: HookAgent, decision: &HookDecision) -> String
         (HookAgent::Antigravity, HookDecision::Stop(reason)) => {
             json!({"decision": "stop", "reason": reason}).to_string()
         }
-        (HookAgent::OpenClaw, HookDecision::Stop(reason)) => {
+        (HookAgent::OpenClaw | HookAgent::OpenCode, HookDecision::Stop(reason)) => {
             json!({"action": "finalize", "reason": reason}).to_string()
         }
         (_, HookDecision::Stop(reason)) => json!({
@@ -994,6 +994,9 @@ pub fn evaluate_context_hook(
         HookAgent::Cursor | HookAgent::Antigravity | HookAgent::OpenClaw => {
             "use the host's native structured user-input tool when available, otherwise ask directly"
         }
+        HookAgent::OpenCode => {
+            "use the host's native structured user-input tool when available, otherwise ask directly"
+        }
     };
     context.push(' ');
     context
@@ -1020,6 +1023,7 @@ pub fn render_context_hook(agent: HookAgent, input: &str, context: &str) -> Stri
             json!({"injectSteps": [{"ephemeralMessage": context}]}).to_string()
         }
         HookAgent::OpenClaw => json!({"prependContext": context}).to_string(),
+        HookAgent::OpenCode => json!({"prependContext": context}).to_string(),
     }
 }
 
@@ -1102,6 +1106,7 @@ pub fn render_scope_warning(agent: HookAgent, warning: &str) -> String {
         HookAgent::Cursor => json!({"permission": "allow", "user_message": warning}).to_string(),
         HookAgent::Antigravity => json!({"decision": "allow", "reason": warning}).to_string(),
         HookAgent::OpenClaw => json!({"block": false}).to_string(),
+        HookAgent::OpenCode => json!({"block": false}).to_string(),
     }
 }
 

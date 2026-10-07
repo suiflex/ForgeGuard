@@ -101,3 +101,32 @@ fn missing_local_wrapper_is_reported_unavailable() {
     assert!(!gradlew.available);
     assert!(gradlew.path.is_none());
 }
+
+#[test]
+fn reports_opencode_plugin_installation_and_missing_command() {
+    let directory = tempdir().expect("temp directory");
+    fs::create_dir_all(directory.path().join(".opencode/plugins")).expect("create OpenCode config");
+    fs::write(
+        directory.path().join(".opencode/plugins/forgeguard.js"),
+        "export const unrelated = true;",
+    )
+    .expect("write incomplete OpenCode plugin");
+
+    let report = run_doctor(directory.path(), None).expect("run doctor");
+    let opencode = report
+        .hooks
+        .iter()
+        .find(|status| status.agent == "opencode")
+        .expect("OpenCode hook status");
+
+    assert!(opencode.installed);
+    assert!(!opencode.configured);
+    assert_eq!(
+        opencode.path,
+        directory.path().join(".opencode/plugins/forgeguard.js")
+    );
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("opencode hook missing")));
+}

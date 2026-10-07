@@ -532,6 +532,8 @@ enum HookAgentArg {
     Antigravity,
     #[value(name = "openclaw")]
     OpenClaw,
+    #[value(name = "opencode")]
+    OpenCode,
 }
 
 fn main() -> ExitCode {
@@ -1582,6 +1584,7 @@ impl From<HookAgentArg> for HookAgent {
             HookAgentArg::Cursor => Self::Cursor,
             HookAgentArg::Antigravity => Self::Antigravity,
             HookAgentArg::OpenClaw => Self::OpenClaw,
+            HookAgentArg::OpenCode => Self::OpenCode,
         }
     }
 }

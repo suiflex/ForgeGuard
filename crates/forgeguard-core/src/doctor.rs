@@ -14,7 +14,7 @@ use crate::{
         CLAUDE_CONTEXT_HOOK_COMMAND, CLAUDE_HOOK_COMMAND, CLAUDE_SCOPE_HOOK_COMMAND,
         CODEX_CONTEXT_HOOK_COMMAND, CODEX_HOOK_COMMAND, CODEX_SCOPE_HOOK_COMMAND,
         CURSOR_CONTEXT_HOOK_COMMAND, CURSOR_HOOK_COMMAND, CURSOR_SCOPE_HOOK_COMMAND,
-        LEGACY_SKILL_NAMES,
+        LEGACY_SKILL_NAMES, OPENCODE_HOOK_COMMAND,
     },
 };
 
@@ -98,7 +98,7 @@ fn hook_statuses(root: &Path) -> Vec<HookStatus> {
     let shared_skill = root
         .join(".agents/skills/forgeguard-engineering/SKILL.md")
         .is_file();
-    [
+    let mut statuses: Vec<HookStatus> = [
         (
             "codex",
             ".codex/hooks.json",
@@ -152,7 +152,15 @@ fn hook_statuses(root: &Path) -> Vec<HookStatus> {
             path,
         }
     })
-    .collect()
+    .collect();
+    let opencode_path = root.join(".opencode/plugins/forgeguard.js");
+    statuses.push(HookStatus {
+        agent: "opencode".to_owned(),
+        installed: root.join(".opencode").exists() || root.join("opencode.json").exists(),
+        configured: fs_contains(&opencode_path, OPENCODE_HOOK_COMMAND),
+        path: opencode_path,
+    });
+    statuses
 }
 
 fn hook_warnings(hooks: &[HookStatus]) -> Vec<String> {

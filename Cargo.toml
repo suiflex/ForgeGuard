@@ -21,7 +21,7 @@ inquire = "0.9"
 kurir = "0.5"
 regex = "1.10"
 # `bundled` compiles SQLite into the binary: no system library, no runtime service.
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 rmcp = { version = "3.3", default-features = false, features = ["macros", "schemars", "server", "transport-io"] }
 schemars = "1"
 serde = { version = "1.0", features = ["derive"] }
